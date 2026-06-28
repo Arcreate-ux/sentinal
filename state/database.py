@@ -128,6 +128,131 @@ class StateDB:
         return await cursor.to_list(length=None)
 
     # ─────────────────────────────────────────────────────────────────────
+    # STUDY BLOCKS (FIRST-CLASS OBJECTS)
+    # ─────────────────────────────────────────────────────────────────────
+    async def save_study_blocks(self, target_date: str, blocks: list[dict[str, Any]]) -> None:
+        """Save normalized study blocks to the database."""
+        db = self._get_db()
+        # Delete any existing blocks for this date so we can safely replace them
+        await db.study_blocks.delete_many({"date": target_date})
+        
+        if blocks:
+            # Add updated timestamp to all blocks
+            for b in blocks:
+                b["updated_at"] = datetime.now(timezone.utc).isoformat()
+            await db.study_blocks.insert_many(blocks)
+            
+        await self.record_timeline_event(
+            "study_blocks.planned",
+            {
+                "date": target_date,
+                "block_ids": [block.get("block_id") for block in blocks],
+                "count": len(blocks),
+            },
+        )
+
+    async def get_study_blocks(self, target_date: str | None = None, include_completed: bool = True) -> list[dict[str, Any]]:
+        """Fetch study blocks, optionally filtered by date and completion status."""
+        db = self._get_db()
+        query = {}
+        if target_date:
+            query["date"] = target_date
+        
+        cursor = db.study_blocks.find(query, {"_id": 0})
+        rows = await cursor.to_list(length=None)
+        
+        if not include_completed:
+            rows = [b for b in rows if str(b.get("status", "")).upper() not in {"COMPLETED", "SKIPPED"}]
+            
+        rows.sort(key=lambda block: block.get("block_id", ""))
+        return rows
+
+    async def get_study_block_by_identifier(self, identifier: str, target_date: str | None = None) -> dict[str, Any] | None:
+        """Fetch a specific study block by its ID or human-readable label."""
+        db = self._get_db()
+        query = {"$or": [{"block_id": identifier}, {"label": identifier}, {"block_label": identifier}]}
+        if target_date:
+            query["date"] = target_date
+            
+        return await db.study_blocks.find_one(query, {"_id": 0})
+
+    async def update_study_block(self, block_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        """Update a specific study block."""
+        db = self._get_db()
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        
+        result = await db.study_blocks.find_one_and_update(
+            {"block_id": block_id},
+            {"$set": updates},
+            return_document=True,
+            projection={"_id": 0}
+        )
+        if result:
+            await self.record_timeline_event("study_block.updated", {"block_id": block_id, "updates": list(updates.keys())})
+        return result
+
+    async def complete_study_block(self, block_id: str, actual: dict[str, Any]) -> dict[str, Any]:
+        """Mark a block as completed with actual metrics."""
+        db = self._get_db()
+        
+        updates = {
+            "status": "COMPLETED",
+            "actual_time": actual.get("actual_time", 0),
+            "actual_attempted": actual.get("attempted", 0),
+            "actual_correct": actual.get("correct", 0),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        result = await db.study_blocks.find_one_and_update(
+            {"block_id": block_id},
+            {"$set": updates},
+            return_document=True,
+            projection={"_id": 0}
+        )
+        if result:
+            await self.record_timeline_event("study_block.completed", {"block_id": block_id, "metrics": actual})
+        return result or {}
+
+    async def skip_study_block(self, block_id: str, reason: str = "") -> dict[str, Any] | None:
+        """Mark a block as skipped."""
+        db = self._get_db()
+        updates = {
+            "status": "SKIPPED",
+            "reason_skipped": reason,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        result = await db.study_blocks.find_one_and_update(
+            {"block_id": block_id},
+            {"$set": updates},
+            return_document=True,
+            projection={"_id": 0}
+        )
+        if result:
+            await self.record_timeline_event("study_block.skipped", {"block_id": block_id, "reason": reason})
+        return result
+
+    # ─────────────────────────────────────────────────────────────────────
+    # TIMELINE & PLANNER DECISIONS
+    # ─────────────────────────────────────────────────────────────────────
+    async def record_timeline_event(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        db = self._get_db()
+        import uuid
+        event = {
+            "event_id": str(uuid.uuid4()),
+            "event_type": event_type,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "payload": payload
+        }
+        await db.timeline.insert_one(dict(event))
+        event.pop("_id", None)
+        return event
+
+    async def save_planner_decision(self, decision: dict[str, Any]) -> None:
+        db = self._get_db()
+        decision["timestamp"] = datetime.now(timezone.utc).isoformat()
+        await db.planner_decisions.insert_one(decision)
+
+    # ─────────────────────────────────────────────────────────────────────
     # DAILY SUMMARY
     # ─────────────────────────────────────────────────────────────────────
     async def save_daily_summary(
