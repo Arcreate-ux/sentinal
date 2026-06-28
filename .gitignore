@@ -1,0 +1,8 @@
+__pycache__/
+venv/
+.env
+.pytest_cache/
+local_lab/runtime/
+scratch/
+data/
+*.log

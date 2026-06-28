@@ -1,0 +1,13 @@
+python-telegram-bot[job-queue]==21.10
+httpx==0.28.1
+apscheduler==3.11.0
+google-genai==1.14.0
+openai==1.82.0
+cohere==5.15.0
+huggingface-hub==0.33.1
+python-dateutil==2.9.0
+pytz==2025.2
+pymongo==4.6.2
+ollamafreeapi
+pydantic>=2.0.0
+pytest>=7.0.0

@@ -1,0 +1,100 @@
+JEE 2028 Master Protocol: System Architecture & Execution
+
+1. System Philosophy
+
+This system is designed to eliminate psychological friction, goal paralysis, and perfectionism. It operates on deterministic execution, data generation, and mathematical accountability.
+
+Sequential Execution (No Clocks): We do not schedule by timestamps (e.g., 14:00 to 16:00). Biological systems cannot sustain zero-variance schedules over two years. We execute strictly by sequence. If a task takes longer than expected, the sequence simply shifts. The timeline never "collapses."
+
+Fail Fast: Perfectionism is a stall tactic. Spending 45 minutes on a single unresolved question is an operational failure. We enforce strict temporal cutoffs (e.g., 5-8 minutes per question). If unresolved, we drop it, log the failure, and move on. Data generation (even zeros) is infinitely more valuable than an empty database.
+
+The 80% Capacity Rule: The theoretical daily maximum is 300 points. We target an absolute baseline of 240 points. The remaining 20% capacity acts as a biological shock absorber for delays, difficult derivations, and fatigue.
+
+Asynchronous Logging: The database is a diagnostic ledger, not a real-time supervisor. We execute on physical paper and log the raw data into Notion only once per day during the final operational block.
+
+2. The Algorithmic Engine: Cognitive Yield
+
+The system does not track "hours studied." It measures computational output using the Cognitive Yield formula. This ensures that time-wasting is penalized and high-focus flow states are rewarded.
+
+The Core Variables
+
+Attempted ($A$): Number of questions initiated.
+
+Correct ($C$): Number of questions solved accurately.
+
+Actual Time ($T$): Total time spent on the block in minutes.
+
+Base Multiplier ($t_q$): The expected time per question, weighted by subject and difficulty. (e.g., Physics Ex 2A $t_q = 4.5$ mins; Math Ex 3B $t_q = 18.0$ mins).
+
+The Math
+
+Target Time ($T_{target}$): $A \cdot t_q$
+
+Accuracy ($Acc$): $C / A$
+
+Velocity: $T_{target} / T$ (Mathematically capped to prevent reckless rushing).
+
+Accuracy Penalty Exponent: $10 / t_q$
+
+Final Yield Formula:
+
+
+$$Yield = \text{round} \left( 1.666 \cdot T_{target} \cdot Acc^{(10/t_q)} \cdot Velocity \right)$$
+
+How it Manipulates Behavior:
+
+Accuracy is Exponential: Dropping accuracy slightly results in a massive yield collapse. It forces precision.
+
+Velocity is Linear: Taking twice as long as the Target Time halves your score. It forces pacing.
+
+Empty Days = Zero: If you do not input volume ($A = 0$), your maximum possible score is zero.
+
+3. Daily Sequence Protocols
+
+These are the static operational queues. Do not look at the clock, just execute the next block in the sequence. Hard stop for the day is strictly 01:00.
+
+Coaching Days (3 Days / Week)
+
+SEQUENCE 1: EXECUTION BLOCK A: High-friction subject. (Max 5-8 mins/question). Terminate when volume is reached or friction spikes.
+
+SEQUENCE 2: EXECUTION BLOCK B: Secondary subject modules.
+
+SEQUENCE 3: ACQUISITION BLOCK: Resolve errors logged from Blocks A & B using the Blank Page Protocol.
+
+(Lunch & Prep Phase)
+
+SEQUENCE 4: INSTITUTE LECTURES: Active acquisition. Log formulas/mechanisms.
+
+(Dinner Phase)
+
+SEQUENCE 5: ACTIVE REVIEW: Extract and consolidate daily institute data.
+
+SEQUENCE 6: SPILLOVER & SYSTEM SYNC: Execute any L1 homework. Open Notion. Batch log all $A$, $C$, $T$ data. Verify the 240-point baseline.
+
+Non-Coaching Days (4 Days / Week)
+
+SEQUENCE 1: REVISION BLOCK: Execute the Notion Revision Backlog (failed questions from prior days).
+
+SEQUENCE 2: THEORY ACQUISITION: Resolve structural theory failures diagnosed in Sequence 1.
+
+(Break & Lunch Phase)
+
+SEQUENCE 3: EXECUTION BLOCK 1: Current chapter Level 2 / Level 3 problems. (Batch size $\le 20$ to prevent score distortion).
+
+(Break Phase)
+
+SEQUENCE 4: EXECUTION BLOCK 2: Chemistry modules or current weakest subject.
+
+(Dinner Phase)
+
+SEQUENCE 5: EXECUTION BLOCK 3: Overflow Level 1 homework from coaching days.
+
+SEQUENCE 6: SPILLOVER & SYSTEM SYNC: Push through high-friction backlog. Open Notion. Batch log all $A$, $C$, $T$ data. Verify the 240-point baseline.
+
+4. Troubleshooting & Failsafes
+
+"I wasted my morning." $\rightarrow$ Start at Sequence 1 right now. You cannot recover the lost time. Accept the low daily score, log the data, and terminate at 01:00.
+
+"The assigned homework is too light." $\rightarrow$ If external tasks won't hit the 240-point baseline, manually escalate. Reroute to Level 2/3 questions, PYQs, or your weakest subject. The 240-point baseline is absolute.
+
+"I am stuck on a question." $\rightarrow$ If the physical timer expires (5 minutes for L1, 8 minutes for L2), drop the pen immediately. Log it as incorrect. Move to the next question. Let the system route it to the Revision Backlog.
