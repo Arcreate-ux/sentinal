@@ -93,7 +93,7 @@ class SentinelBot:
         Returns:
             The configured Application instance.
         """
-        builder = Application.builder().token(self.token)
+        builder = Application.builder().token(self.token).connect_timeout(30.0).read_timeout(30.0).write_timeout(30.0).pool_timeout(30.0)
         self.app = builder.build()
 
         # Inject shared services into bot_data so handlers can access them
