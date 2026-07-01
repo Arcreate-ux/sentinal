@@ -95,9 +95,10 @@ ensure_huggingface_space() {
     exit 1
   fi
 
-  hf_username="$(hf auth whoami --format quiet | head -n1 | cut -f1)"
+  hf_whoami_out="$(hf auth whoami 2>&1 || true)"
+  hf_username="$(echo "$hf_whoami_out" | awk -F'=' '/^user=/ {print $2; exit}')"
   if [[ -z "$hf_username" ]]; then
-    echo "Could not determine Hugging Face username from hf auth whoami." >&2
+    echo "Could not determine Hugging Face username from hf auth whoami. Output was: $hf_whoami_out" >&2
     exit 1
   fi
 
