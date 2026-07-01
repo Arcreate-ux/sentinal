@@ -95,7 +95,7 @@ ensure_huggingface_space() {
     exit 1
   fi
 
-  hf_username="$(hf auth whoami | awk -F': ' '/^user: / {print $2; exit}')"
+  hf_username="$(hf auth whoami | awk -F'=' '/^user=/ {print $2; exit}')"
   if [[ -z "$hf_username" ]]; then
     echo "Could not determine Hugging Face username from hf auth whoami." >&2
     exit 1
