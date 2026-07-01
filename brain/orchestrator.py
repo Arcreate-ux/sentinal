@@ -411,7 +411,6 @@ class Orchestrator:
             rules = memory_context.get("study_rules", [])
             relevant_mems = memory_context.get("relevant_memories", [])
             
-            from datetime import datetime
             now_str = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S %Z")
 
             context_str = (
