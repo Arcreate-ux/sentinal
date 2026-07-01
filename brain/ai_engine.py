@@ -140,7 +140,10 @@ class AIEngine:
         """Gracefully shut down HTTP clients."""
         await self._http.aclose()
         for client in self._openai_clients.values():
-            await client.close()
+            if hasattr(client, "close"):
+                client.close()
+            elif hasattr(client, "aclose"):
+                await client.aclose()
         logger.info("AIEngine shut down.")
 
     # ── public API ────────────────────────────────────────────────────────

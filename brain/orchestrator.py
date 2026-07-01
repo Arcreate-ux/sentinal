@@ -398,16 +398,36 @@ class Orchestrator:
 
             # Build the context string
             profile = memory_context.get("student_profile", {})
+            
+            # Extract detailed profile info
             name = profile.get("name", "Student") if profile else "Student"
+            target_exam = profile.get("target_exam", "JEE")
+            start_date = profile.get("start_date", "Unknown")
+            coaching_days = profile.get("coaching_days", "Unknown")
+            faculty = profile.get("faculty", {})
+            current_chapters = profile.get("current_chapters", {})
+            backlogs = profile.get("backlogs", "0")
+
             rules = memory_context.get("study_rules", [])
             relevant_mems = memory_context.get("relevant_memories", [])
+            
+            from datetime import datetime
+            now_str = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S %Z")
 
             context_str = (
-                f"STUDENT: {name}\n"
-                f"TODAY'S PLAN:\n{plan_summary}\n"
-                f"YESTERDAY CY: {yesterday_summary.get('total_cy', 'N/A') if yesterday_summary else 'N/A'}\n"
-                f"UNRESOLVED DOUBTS: {doubts_summary}\n"
-                f"STUDY RULES: {json.dumps(rules) if rules else 'None'}\n"
+                f"CURRENT DATE/TIME: {now_str}\n"
+                f"STUDENT PROFILE:\n"
+                f" - Name: {name}\n"
+                f" - Target: {target_exam}\n"
+                f" - Prep Started: {start_date}\n"
+                f" - Coaching Days: {coaching_days}\n"
+                f" - Faculty: {json.dumps(faculty)}\n"
+                f" - Current Chapters: {json.dumps(current_chapters)}\n"
+                f" - Backlogs: {backlogs}\n\n"
+                f"TODAY'S PLAN:\n{plan_summary}\n\n"
+                f"YESTERDAY CY: {yesterday_summary.get('total_cy', 'N/A') if yesterday_summary else 'N/A'}\n\n"
+                f"UNRESOLVED DOUBTS: {doubts_summary}\n\n"
+                f"STUDY RULES: {json.dumps(rules) if rules else 'None'}\n\n"
                 f"RELEVANT MEMORIES: {json.dumps(relevant_mems) if relevant_mems else 'None'}\n"
             )
 
@@ -437,10 +457,14 @@ class Orchestrator:
                 memory_text = parts[1].strip()
                 if memory_text:
                     await self.personal_memory.save(memory_text)
-                    response_text += "\n\n\ud83e\udde0 Saved to memory."
+                    response_text += "\n\n🧠 Saved to memory."
+                
+                # Sanitize any bad surrogates returned by the AI provider (e.g. \u202f or half-emojis)
+                response_text = response_text.encode('utf-16', 'surrogatepass').decode('utf-16')
                 await reply(response_text)
             else:
-                await reply(response.strip())
+                response = response.strip().encode('utf-16', 'surrogatepass').decode('utf-16')
+                await reply(response)
 
         except Exception as e:
             logger.error("General message handler failed: %s", e, exc_info=True)
