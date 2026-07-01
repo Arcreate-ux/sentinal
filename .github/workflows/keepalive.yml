@@ -1,0 +1,21 @@
+name: Keep Render Awake
+
+on:
+  schedule:
+    - cron: '*/10 * * * *' # Runs every 10 minutes
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render Health Check
+        run: |
+          # Replace the URL below with your actual Render URL after deploying!
+          RENDER_URL="${{ secrets.RENDER_URL }}"
+          if [ -z "$RENDER_URL" ]; then
+            echo "RENDER_URL secret is not set. Please add it to your GitHub Repository Secrets."
+            exit 1
+          fi
+          echo "Pinging $RENDER_URL ..."
+          curl -sS "$RENDER_URL"
