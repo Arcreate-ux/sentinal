@@ -1,3 +1,12 @@
+---
+title: Sentinel
+emoji: 🧠
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # SENTINEL
 
 SENTINEL is an autonomous study decision system for JEE preparation. The same source tree can live on GitHub and run as a Hugging Face Docker Space without changing the app code.
