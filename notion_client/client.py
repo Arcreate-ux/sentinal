@@ -64,6 +64,7 @@ class NotionClient:
             return resp.status_code == 200
         except Exception:
             return False
+        raise
 
     async def create_db4_if_not_exists(self) -> str:
         """Create or return the DB4 ID for System Logs."""
@@ -210,7 +211,7 @@ class NotionClient:
             return {"cy": total_cy}
         except Exception as e:
             logger.error(f"Failed to get daily stats: {e}")
-            return {"cy": 0}
+            raise e
 
     @async_retry(max_retries=2, base_delay=1.0)
     async def get_revision_backlog(self) -> list[dict]:
@@ -250,7 +251,7 @@ class NotionClient:
             return backlog
         except Exception as e:
             logger.error(f"Failed to get revision backlog: {e}")
-            return []
+            raise e
 
     @async_retry(max_retries=2, base_delay=1.0)
     async def read_db1_rows(self, filters: dict) -> list[dict]:
@@ -278,4 +279,4 @@ class NotionClient:
             return rows
         except Exception as e:
             logger.error(f"Failed to read db1 rows: {e}")
-            return []
+            raise e

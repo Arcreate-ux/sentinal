@@ -11,6 +11,9 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 from telegram import Update
 from telegram.ext import (
@@ -222,8 +225,8 @@ class SentinelBot:
         from sentinel.brain.morning_formatter import MorningFormatter
         from datetime import timedelta
 
-        today = datetime.now().strftime("%Y-%m-%d")
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        today = datetime.now(_IST).strftime("%Y-%m-%d")
+        yesterday = (datetime.now(_IST) - timedelta(days=1)).strftime("%Y-%m-%d")
         try:
             plan_date = await self.state.get_state("plan_date")
             raw = await self.state.get_state("current_plan")
@@ -232,7 +235,7 @@ class SentinelBot:
             else:
                 coaching_days_raw = await self.state.get_state("coaching_days")
                 coaching_days = json.loads(coaching_days_raw) if coaching_days_raw else []
-                weekday = datetime.now().strftime("%A")[:3]
+                weekday = datetime.now(_IST).strftime("%A")[:3]
                 day_type = "coaching" if weekday in coaching_days else "self_study"
                 homework_raw = await self.state.get_state("homework_pending")
                 homework = json.loads(homework_raw) if homework_raw else []
@@ -279,7 +282,7 @@ class SentinelBot:
         time_est = getattr(block, "expected_time_mins", 0)
         
         try:
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = datetime.now(_IST).strftime("%Y-%m-%d")
             completed = await self.state.get_today_blocks(today)
             cy_so_far = sum(b.get("actual_cy", 0) for b in completed)
             cy_remaining = max(0, DAILY_CY_TARGET - cy_so_far)
@@ -316,7 +319,7 @@ class SentinelBot:
             )
             
         await self.state.set_state("conversation_state", "awaiting_block_report")
-        await self.state.set_state("block_start_time", datetime.now().isoformat())
+        await self.state.set_state("block_start_time", datetime.now(_IST).isoformat())
         await self.send_message(message)
 
     async def send_timeout_ping(self, block, level: int) -> None:
@@ -353,7 +356,7 @@ class SentinelBot:
 
     async def send_daily_summary(self) -> None:
         """Calculate, log, and send the end-of-day summary."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now(_IST).strftime("%Y-%m-%d")
         completed = await self.state.get_today_blocks(today)
         
         skipped_raw = await self.state.get_state("blocks_skipped_today")

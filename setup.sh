@@ -157,5 +157,5 @@ sync_huggingface_secrets
 push_branches
 
 echo "Deployment complete."
-echo "GitHub: $(git remote get-url origin)"
-echo "Hugging Face: $(git remote get-url hf)"
+echo "GitHub: https://github.com/Yatin-Code/sentinal.git"
+echo "Hugging Face: https://huggingface.co/spaces/$HF_SPACE_ID"
