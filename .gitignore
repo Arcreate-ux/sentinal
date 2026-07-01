@@ -6,4 +6,3 @@ local_lab/runtime/
 scratch/
 data/
 *.log
-setup.sh
