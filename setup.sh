@@ -95,7 +95,7 @@ ensure_huggingface_space() {
     exit 1
   fi
 
-  hf_username="$(hf auth whoami | awk -F'=' '/^user=/ {print $2; exit}')"
+  hf_username="$(hf auth whoami --format quiet | head -n1 | cut -f1)"
   if [[ -z "$hf_username" ]]; then
     echo "Could not determine Hugging Face username from hf auth whoami." >&2
     exit 1
@@ -121,15 +121,9 @@ ensure_huggingface_space() {
       --exist-ok
   fi
 
-  if [[ -z "$HF_TOKEN" ]] && [[ -f ~/.cache/huggingface/token ]]; then
-    HF_TOKEN="$(cat ~/.cache/huggingface/token)"
-  fi
-
   if ! git remote get-url hf >/dev/null 2>&1; then
-    git remote add hf "https://$hf_username:$HF_TOKEN@huggingface.co/spaces/$HF_SPACE_ID"
+    git remote add hf "https://huggingface.co/spaces/$HF_SPACE_ID"
     echo "Added Hugging Face git remote: https://huggingface.co/spaces/$HF_SPACE_ID"
-  else
-    git remote set-url hf "https://$hf_username:$HF_TOKEN@huggingface.co/spaces/$HF_SPACE_ID"
   fi
 }
 
@@ -137,8 +131,8 @@ push_branches() {
   echo "Pushing branch '$CURRENT_BRANCH' to GitHub..."
   git push origin "$CURRENT_BRANCH"
 
-  echo "Pushing branch '$CURRENT_BRANCH' to Hugging Face (force)..."
-  git push -f hf "$CURRENT_BRANCH"
+  echo "Pushing branch '$CURRENT_BRANCH' to Hugging Face..."
+  git push hf "$CURRENT_BRANCH"
 }
 
 sync_huggingface_secrets() {
