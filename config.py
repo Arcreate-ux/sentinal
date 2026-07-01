@@ -12,6 +12,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent
 DB_PATH = PROJECT_ROOT / "data" / "sentinel.db"
 LOG_PATH = PROJECT_ROOT / "data" / "sentinel.log"
+SENTINEL_VERSION = "phase8.2"
 
 
 def _load_dotenv(env_path: Path) -> None:
@@ -88,7 +89,7 @@ AI_PROVIDERS = {
     "cerebras": {
         "api_key_env": "CEREBRAS_API_KEY",
         "tier": "fast",
-        "model": "llama-3.3-70b",
+        "model": "gpt-oss-120b",
         "base_url": "https://api.cerebras.ai/v1",
         "rpm_limit": 30,
     },
@@ -102,14 +103,14 @@ AI_PROVIDERS = {
     "cohere": {
         "api_key_env": "COHERE_API_KEY",
         "tier": "fallback",
-        "model": "command-r",
+        "model": "command-a-plus-05-2026",
         "base_url": "https://api.cohere.com/v2",
         "rpm_limit": 20,
     },
     "huggingface": {
         "api_key_env": "HUGGINGFACE_API_KEY",
         "tier": "fallback",
-        "model": "meta-llama/Llama-3.1-70B-Instruct",
+        "model": "meta-llama/Meta-Llama-3-70B-Instruct",
         "base_url": "https://api-inference.huggingface.co/models",
         "rpm_limit": 10,
     },
@@ -120,12 +121,26 @@ AI_PROVIDERS = {
         "base_url": None,  # Cloudflare Workers AI uses a different format
         "rpm_limit": 10,
     },
-    "airforce": {
-        "api_key_env": "AIRFORCE_API_KEY",
+    "cf_glm_5_2": {
+        "api_key_env": "CLOUDFLARE_API_KEY",
         "tier": "think",
-        "model": "deepseek-v4-pro",
-        "base_url": "https://api.airforce/v1",
-        "rpm_limit": 30,
+        "model": "@cf/zai-org/glm-5.2",
+        "base_url": None,
+        "rpm_limit": 10,
+    },
+    "cf_gpt_oss_120b": {
+        "api_key_env": "CLOUDFLARE_API_KEY",
+        "tier": "fast",
+        "model": "@cf/openai/gpt-oss-120b",
+        "base_url": None,
+        "rpm_limit": 10,
+    },
+    "cf_nemotron_120b": {
+        "api_key_env": "CLOUDFLARE_API_KEY",
+        "tier": "fast",
+        "model": "@cf/nvidia/nemotron-3-120b-a12b",
+        "base_url": None,
+        "rpm_limit": 10,
     },
     "g4f_pro": {
         "api_key_env": "G4F_API_KEY",
@@ -141,6 +156,34 @@ AI_PROVIDERS = {
         "base_url": "https://api.g4f.dev/v1",
         "rpm_limit": 30,
     },
+    "gpt_5_5": {
+        "api_key_env": "G4F_API_KEY",
+        "tier": "think",
+        "model": "gpt-5.5",
+        "base_url": "https://api.g4f.dev/v1",
+        "rpm_limit": 30,
+    },
+    "glm_5_2": {
+        "api_key_env": "G4F_API_KEY",
+        "tier": "think",
+        "model": "glm-5.2",
+        "base_url": "https://api.g4f.dev/v1",
+        "rpm_limit": 30,
+    },
+    "gpt_oss_120b": {
+        "api_key_env": "G4F_API_KEY",
+        "tier": "fast",
+        "model": "openai/gpt-oss-120b",
+        "base_url": "https://api.g4f.dev/v1",
+        "rpm_limit": 30,
+    },
+    "groq_oss_120b": {
+        "api_key_env": "GROQ_API_KEY",
+        "tier": "fast",
+        "model": "openai/gpt-oss-120b",
+        "base_url": "https://api.groq.com/openai/v1",
+        "rpm_limit": 30,
+    },
     "uncloseai": {
         "api_key_env": "UNCLOSEAI_API_KEY",
         "tier": "fallback",
@@ -151,22 +194,27 @@ AI_PROVIDERS = {
     "ollama": {
         "api_key_env": "OLLAMA_API_KEY", # Can be left blank for ollamafreeapi
         "tier": "fast",
-        "model": "llama3.2:3b",
-        "base_url": "library", # Uses custom library
+        "model": "qwen3.5:122b-cloud",
+        "base_url": "http://127.0.0.1:11434/v1",
         "rpm_limit": 60,
     },
 }
 
 # Fallback chain order
-FALLBACK_CHAIN = ["g4f_pro", "gemini", "airforce", "groq", "g4f", "cerebras", "ollama", "openrouter", "cohere", "huggingface", "uncloseai", "cloudflare"]
-FAST_PROVIDERS = ["groq", "g4f", "cerebras", "ollama"]
-THINK_PROVIDERS = ["g4f_pro", "gemini", "airforce"]
+FALLBACK_CHAIN = ["gpt_5_5", "cohere", "cf_glm_5_2", "glm_5_2", "g4f_pro", "gemini", "gpt_oss_120b", "groq_oss_120b", "cf_gpt_oss_120b", "cf_nemotron_120b", "g4f", "groq", "cerebras", "ollama", "openrouter", "huggingface", "uncloseai", "cloudflare"]
+FAST_PROVIDERS = ["groq_oss_120b", "cerebras", "cf_gpt_oss_120b", "cf_nemotron_120b", "gpt_oss_120b", "g4f", "groq", "ollama"]
+THINK_PROVIDERS = ["gpt_5_5", "cf_glm_5_2", "glm_5_2", "g4f_pro", "gemini"]
 
 # Task Profiles for dynamic routing and execution strategy
 DEFAULT_TASK_PROFILES = {
     "parse_message": {
         "priority": "high", "quality_target": 6, "latency_budget": 2, 
         "background": False, "allow_benchmark": False, "allow_synthesis": False
+    },
+    "benchmark_judge": {
+        "priority": "high", "quality_target": 10, "latency_budget": 300, 
+        "background": False, "allow_benchmark": True, "allow_synthesis": False,
+        "temperature": 0.0
     },
     "think": {
         "priority": "high", "quality_target": 9, "latency_budget": 30, 
@@ -207,7 +255,7 @@ DEFAULT_TASK_PROFILES = {
     "weekly_roast": {
         "priority": "high", "quality_target": 10, "latency_budget": 300, 
         "background": True, "allow_benchmark": True, "allow_synthesis": True,
-        "preferred_models": ["gpt-4o", "gemini-2.5-pro"]
+        "preferred_models": ["gpt_5_5", "gemini"]
     },
     "test_recalibration": {
         "priority": "high", "quality_target": 9, "latency_budget": 60, 

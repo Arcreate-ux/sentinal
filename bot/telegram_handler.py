@@ -74,6 +74,7 @@ class SentinelBot:
         self.planner = planner
         self.analyzer = analyzer
         self.roaster = roaster
+        self.reflection_engine = None
         
         # Core Orchestrator Dependency
         self.orchestrator = None # Will be injected by main.py
@@ -216,11 +217,13 @@ class SentinelBot:
             logger.exception("Failed to send scheduled message")
 
     async def send_morning_briefing(self) -> None:
-        """Send today's plan, generating it first if needed."""
+        """Send today's plan + intelligence, generating the plan first if needed."""
         from sentinel.brain.contracts import PlanningResult
         from sentinel.brain.morning_formatter import MorningFormatter
+        from datetime import timedelta
 
         today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         try:
             plan_date = await self.state.get_state("plan_date")
             raw = await self.state.get_state("current_plan")
@@ -235,7 +238,32 @@ class SentinelBot:
                 homework = json.loads(homework_raw) if homework_raw else []
                 result = await self.planner.generate_daily_plan(day_type, coaching_days, homework)
 
-            await self.send_message(MorningFormatter().format_morning_briefing(result.plan))
+            # Load extra context for rich briefing
+            profile = await self.state.get_student_profile()
+            yesterday_summary = await self.state.get_daily_summary(yesterday)
+            streak = await self.state.get_streak("daily_target")
+            unresolved = await self.state.get_unresolved_concepts()
+            unresolved_count = len(unresolved) if unresolved else 0
+
+            # Find weakest concept
+            weakest_concept = None
+            if unresolved:
+                weakest_concept = unresolved[0].get("concept_name", "Unknown")
+
+            # Homework count
+            hw_raw = await self.state.get_state("homework_pending")
+            homework_count = len(json.loads(hw_raw)) if hw_raw else 0
+
+            msg = MorningFormatter().format_morning_briefing(
+                plan=result.plan,
+                profile=profile,
+                yesterday_summary=yesterday_summary,
+                streak=streak,
+                unresolved_count=unresolved_count,
+                homework_count=homework_count,
+                weakest_concept=weakest_concept,
+            )
+            await self.send_message(msg)
         except Exception:
             logger.exception("Failed to send morning briefing")
             await self.send_message("⚠️ Morning briefing failed. Use /plan to generate it manually.")
@@ -380,6 +408,12 @@ class SentinelBot:
                 blocks_skipped=skipped_count,
                 day_type=day_type,
             )
+
+            if self.reflection_engine:
+                try:
+                    await self.reflection_engine.run_evening_reflection(today)
+                except Exception:
+                    logger.warning("Failed to append evening reflection telemetry", exc_info=True)
             
             # Update streak
             if totals["total_cy"] >= DAILY_CY_TARGET:

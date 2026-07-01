@@ -1,5 +1,6 @@
 from sentinel.brain.contracts.planning import (
     PlanningContext,
+    PlanningPrediction,
     ExecutionBlock,
     ExecutionPlan,
     PlanningResult,
@@ -11,6 +12,7 @@ from sentinel.brain.contracts.planning import (
 
 __all__ = [
     "PlanningContext",
+    "PlanningPrediction",
     "ExecutionBlock",
     "ExecutionPlan",
     "PlanningResult",

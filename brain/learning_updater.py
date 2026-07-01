@@ -36,7 +36,7 @@ class LearningModelUpdater:
                 continue
                 
             db = self.state._get_db()
-            existing = db.concept_assets.find_one({"concept_name": concept_name})
+            existing = await db.concept_assets.find_one({"concept_name": concept_name})
             
             now = datetime.now(timezone.utc).isoformat()
             
@@ -81,7 +81,7 @@ class LearningModelUpdater:
                 else:
                     mastery = "Novice"
                 
-                db.concept_assets.update_one(
+                await db.concept_assets.update_one(
                     {"concept_name": concept_name},
                     {"$set": {
                         "revisions": revisions,
@@ -106,7 +106,7 @@ class LearningModelUpdater:
                 asset["connected_to"] = asset.get("proposed_connections", [])
                 asset["updated_at"] = now
                 
-                db.concept_assets.insert_one(asset)
+                await db.concept_assets.insert_one(asset)
                 
         # 3. Aggregate up to Skills
         await self._aggregate_skills(concept_assets)
@@ -114,7 +114,7 @@ class LearningModelUpdater:
         # 4. Cold Archive Questions
         db = self.state._get_db()
         if archived_questions:
-            db.archived_questions.insert_many(archived_questions)
+            await db.archived_questions.insert_many(archived_questions)
             
         logger.info(f"Learning Model updated: {len(concept_assets)} concepts modified, {len(archived_questions)} questions archived.")
 
@@ -154,14 +154,14 @@ class LearningModelUpdater:
                 
             # Fetch all concepts in the DB for this category
             cursor = db.concept_assets.find({"concept_name": {"$in": category_concepts}})
-            stored_concepts = list(cursor)
+            stored_concepts = await cursor.to_list(length=None)
             
             if not stored_concepts:
                 continue
                 
             avg_confidence = sum(c.get("confidence_score", 0.0) for c in stored_concepts) / len(stored_concepts)
             
-            db.skill_assets.update_one(
+            await db.skill_assets.update_one(
                 {"skill_name": skill_name, "subject": subject},
                 {"$set": {
                     "confidence_score": avg_confidence,

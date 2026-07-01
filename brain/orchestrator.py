@@ -10,7 +10,10 @@ Follows the principle: "Every abstraction must pay rent."
 import logging
 import json
 from typing import Callable, Awaitable
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 from sentinel.brain.study_blocks import StudyBlockEngine
 
@@ -32,7 +35,9 @@ class Orchestrator:
         reflection_engine,
         knowledge_engine,
         analyzer,
-        notion_client
+        notion_client,
+        personal_memory=None,
+        ai_engine=None,
     ):
         self.state = state_db
         self.context = context_builder
@@ -44,6 +49,8 @@ class Orchestrator:
         self.knowledge_engine = knowledge_engine
         self.analyzer = analyzer
         self.notion = notion_client
+        self.personal_memory = personal_memory
+        self.ai = ai_engine
 
     async def handle(self, message: str, reply_callback: Callable[[str], Awaitable[None]], context_obj=None) -> None:
         """
@@ -59,6 +66,14 @@ class Orchestrator:
         state_key = await self.state.get_state("conversation_state")
 
         try:
+            # 0. Onboarding state — takes priority over everything
+            if state_key == "onboarding":
+                from sentinel.brain.onboarding import OnboardingEngine
+                onboarding = OnboardingEngine(self.state)
+                response = await onboarding.handle_step(text)
+                await reply_callback(response)
+                return
+
             # 1. Handle explicit conversation states (state-machine)
             if state_key == "awaiting_block_report":
                 await self._handle_block_report(text, reply_callback, context_obj)
@@ -153,7 +168,7 @@ class Orchestrator:
         await reply("\n".join(summary))
 
     async def _handle_done_block_selection(self, text: str, reply) -> None:
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now(_IST).strftime("%Y-%m-%d")
         block = None
         if _state_supports(self.state, "get_study_block_by_identifier"):
             block = await self.state.get_study_block_by_identifier(text.strip(), today)
@@ -260,7 +275,7 @@ class Orchestrator:
 
         from sentinel.notion_client.formulas import cognitive_yield
 
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now(_IST).strftime("%Y-%m-%d")
         attempted = parsed_data.get("attempted", 0)
         correct = parsed_data.get("correct", 0)
         time_taken = parsed_data.get("time_taken") or block_data.get("target_time", 0)
@@ -344,9 +359,92 @@ class Orchestrator:
             await reply("⚠️ Failed to analyze history.")
 
     async def _handle_general_message(self, text: str, intent_data, reply) -> None:
-        complexity = intent_data.complexity_tier if intent_data else "think"
-        # Mock simple chat reply for now
-        await reply(f"Echo [{complexity}]: {text}")
+        """Unified AI handler. Every non-command message goes through here with full context."""
+        if not self.ai:
+            await reply("\u26a0\ufe0f AI engine not available.")
+            return
+
+        try:
+            # 1. Load full context: profile + memories + plan + doubts + rules
+            memory_context = {}
+            if self.personal_memory:
+                memory_context = await self.personal_memory.get_context_for_ai(text)
+
+            # Current plan
+            raw_plan = await self.state.get_state("current_plan")
+            plan_summary = "No plan generated yet."
+            if raw_plan:
+                try:
+                    from sentinel.brain.contracts import PlanningResult
+                    result = PlanningResult.model_validate_json(raw_plan)
+                    blocks = result.plan.blocks
+                    plan_summary = "\n".join(
+                        f"  {b.block_label}: {b.subject} {b.exercise_type} ({b.question_count}Q, {b.target_time}m)"
+                        for b in blocks
+                    )
+                except Exception:
+                    plan_summary = "Plan exists but couldn't be parsed."
+
+            # Yesterday's summary
+            from datetime import timedelta
+            yesterday = (datetime.now(_IST) - timedelta(days=1)).strftime("%Y-%m-%d")
+            yesterday_summary = await self.state.get_daily_summary(yesterday)
+
+            # Unresolved doubts (top 5)
+            unresolved = await self.state.get_unresolved_concepts()
+            doubts_summary = ", ".join(
+                c.get("concept_name", "?") for c in (unresolved or [])[:5]
+            ) if unresolved else "None"
+
+            # Build the context string
+            profile = memory_context.get("student_profile", {})
+            name = profile.get("name", "Student") if profile else "Student"
+            rules = memory_context.get("study_rules", [])
+            relevant_mems = memory_context.get("relevant_memories", [])
+
+            context_str = (
+                f"STUDENT: {name}\n"
+                f"TODAY'S PLAN:\n{plan_summary}\n"
+                f"YESTERDAY CY: {yesterday_summary.get('total_cy', 'N/A') if yesterday_summary else 'N/A'}\n"
+                f"UNRESOLVED DOUBTS: {doubts_summary}\n"
+                f"STUDY RULES: {json.dumps(rules) if rules else 'None'}\n"
+                f"RELEVANT MEMORIES: {json.dumps(relevant_mems) if relevant_mems else 'None'}\n"
+            )
+
+            system_prompt = (
+                "You are SENTINEL, an AI study coach for a JEE student. "
+                "You have access to the student's full study data below. "
+                "Answer concisely and actionably using ONLY the provided context. "
+                "If the student tells you a new rule or preference (e.g. 'from today do 2 hours PYQs'), "
+                "acknowledge it and include in your response: SAVE_MEMORY: <the rule to save>. "
+                "Keep responses under 300 words. Be direct, no fluff."
+            )
+
+            prompt = f"CONTEXT:\n{context_str}\nSTUDENT MESSAGE: {text}"
+
+            response = await self.ai.call(
+                task_type="general_chat",
+                prompt=prompt,
+                system_prompt=system_prompt,
+                max_tokens=400,
+                temperature=0.5,
+            )
+
+            # 2. Check if AI wants to save a memory
+            if self.personal_memory and "SAVE_MEMORY:" in response:
+                parts = response.split("SAVE_MEMORY:", 1)
+                response_text = parts[0].strip()
+                memory_text = parts[1].strip()
+                if memory_text:
+                    await self.personal_memory.save(memory_text)
+                    response_text += "\n\n\ud83e\udde0 Saved to memory."
+                await reply(response_text)
+            else:
+                await reply(response.strip())
+
+        except Exception as e:
+            logger.error("General message handler failed: %s", e, exc_info=True)
+            await reply("\u26a0\ufe0f Couldn't process that right now. Try a command instead.")
 
     async def _log_block_result(self, report, reply, context_obj) -> None:
         from sentinel.notion_client.formulas import cognitive_yield
@@ -380,7 +478,7 @@ class Orchestrator:
         if not report.exercise_type and current_block.get("exercise_type"):
             ex_type = current_block["exercise_type"]
 
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now(_IST).strftime("%Y-%m-%d")
         block_label = current_block.get("block_label", f"Block-{idx + 1}")
         cy = cognitive_yield(T, A, C, ex_type, subject)
 

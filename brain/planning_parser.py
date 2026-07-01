@@ -7,7 +7,7 @@ import json
 import logging
 from pydantic import ValidationError
 
-from sentinel.brain.contracts import ExecutionPlan, ExecutionBlock
+from sentinel.brain.contracts import ExecutionPlan, ExecutionBlock, PlanningPrediction
 
 logger = logging.getLogger("sentinel.planning_parser")
 
@@ -48,12 +48,27 @@ class PlanningParser:
             except ValidationError as e:
                 logger.warning("Failed to validate block schema: %s. Block: %s", e, block)
                 raise ValueError(f"Schema validation failed: {e}")
-                
+
+        prediction_payload = parsed.get("prediction") or {}
+        try:
+            prediction = PlanningPrediction.model_validate(prediction_payload)
+        except ValidationError as e:
+            logger.warning("Failed to validate prediction schema: %s. Payload: %s", e, prediction_payload)
+            raise ValueError(f"Prediction schema validation failed: {e}")
+
+        if not prediction.expected_cy:
+            prediction.expected_cy = total_cy
+        if not prediction.expected_duration:
+            prediction.expected_duration = total_time
+        if not prediction.expected_completion:
+            prediction.expected_completion = 1.0
+
         return ExecutionPlan(
             date=today,
             day_type=day_type,
             blocks=blocks,
             total_expected_cy=total_cy,
             total_expected_time=total_time,
+            prediction=prediction,
             is_fallback=False
         )

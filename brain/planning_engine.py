@@ -12,8 +12,11 @@ Implements the Midnight Optimization Role-Based AI Committee.
 
 import json
 import logging
+import uuid
 from datetime import datetime
 from typing import Any
+
+from sentinel import config
 
 logger = logging.getLogger("sentinel.brain.planning_engine")
 
@@ -34,6 +37,8 @@ class PlanningEngine:
         Returns the final optimized Battle Plan dict.
         """
         logger.info("Starting Midnight Optimization Committee...")
+        decision_id = str(uuid.uuid4())
+        generated_at = datetime.now().isoformat()
 
         # 0. The Historian (Python Retrieval)
         recent_recs = await self.state.get_recent_recommendations(limit=5)
@@ -76,6 +81,7 @@ class PlanningEngine:
 
         # Context package
         context = {
+            "decision_id": decision_id,
             "user_draft_plan": manual_notion_plan,
             "today_diagnosis": today_diagnosis,
             "historian_memory": historian_context,
@@ -173,11 +179,18 @@ class PlanningEngine:
         
         Output STRICT JSON matching this schema:
         {{
+            "decision_id": "{decision_id}",
             "date": "{context['date']}",
             "predicted_total_cy": <float estimated Cognitive Yield for tomorrow>,
+            "prediction": {{
+                "expected_cy": <float estimated Cognitive Yield for tomorrow>,
+                "expected_duration": <int total planned minutes>,
+                "expected_completion": <0.0-1.0>,
+                "expected_fatigue": <0.0-1.0 or null>
+            }},
             "briefing_message": "<The Telegram message the user wakes up to>",
             "blocks": [
-                {{"block_label": "EB-1", "subject": "Chem", "exercise_type": "Theory", "target_time": 45}}
+                {{"decision_id": "{decision_id}", "block_label": "EB-1", "subject": "Chem", "exercise_type": "Theory", "target_time": 45}}
             ]
         }}
         """
@@ -197,13 +210,52 @@ class PlanningEngine:
             elif "```" in cleaned: cleaned = cleaned.split("```", 1)[1].split("```", 1)[0]
                 
             battle_plan = json.loads(cleaned.strip())
+            battle_plan["decision_id"] = decision_id
+            prediction = battle_plan.get("prediction") or {}
+            blocks = battle_plan.get("blocks", [])
+            expected_cy = prediction.get("expected_cy") or battle_plan.get("predicted_total_cy") or sum(
+                float(block.get("expected_cy", 0) or 0) for block in blocks if isinstance(block, dict)
+            )
+            expected_duration = prediction.get("expected_duration") or sum(
+                float(block.get("target_time", 0) or 0) for block in blocks if isinstance(block, dict)
+            )
+            battle_plan["prediction"] = {
+                "expected_cy": expected_cy,
+                "expected_duration": expected_duration,
+                "expected_completion": prediction.get("expected_completion", 1.0),
+                "expected_fatigue": prediction.get("expected_fatigue"),
+            }
+            for block in blocks:
+                if isinstance(block, dict):
+                    block["decision_id"] = decision_id
             
             await self.state.set_state("plan_date", battle_plan.get("date"))
             await self.state.set_state("current_plan", json.dumps(battle_plan))
+            await self.state.set_state("current_decision_id", decision_id)
+
+            if hasattr(self.state, "save_planner_decision"):
+                await self.state.save_planner_decision(
+                    {
+                        "decision_id": decision_id,
+                        "version": config.SENTINEL_VERSION,
+                        "date": battle_plan.get("date"),
+                        "generated_at": generated_at,
+                        "inputs": context,
+                        "planner_reasoning": {
+                            "planner_draft": planner_draft,
+                            "critic_feedback": critic_feedback,
+                            "coach_feedback": coach_feedback,
+                            "path": "PlanningEngine.run_midnight_optimization",
+                        },
+                        "plan": battle_plan,
+                        "prediction": battle_plan["prediction"],
+                        "actual": None,
+                        "prediction_error": None,
+                    }
+                )
             
             if self.bus:
                 import time
-                import uuid
                 from sentinel.bot.events import BattlePlanGenerated
                 event = BattlePlanGenerated(
                     event_id=str(uuid.uuid4()),

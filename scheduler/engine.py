@@ -18,6 +18,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from sentinel.config import (
     TIMEZONE,
+    SENTINEL_VERSION,
     MORNING_BRIEFING_HOUR,
     BLOCK_TIMEOUT_MINUTES,
     API_HEALTH_CHECK_HOURS,
@@ -106,7 +107,16 @@ class SentinelScheduler:
             replace_existing=True,
         )
 
-        # 4. API Health Check: every API_HEALTH_CHECK_HOURS hours
+        # 4. Daily research snapshot: daily at 23:59
+        self.scheduler.add_job(
+            self.run_daily_snapshot,
+            trigger=CronTrigger(hour=23, minute=59, timezone=self.tz),
+            id="daily_research_snapshot",
+            name="Daily Research Snapshot",
+            replace_existing=True,
+        )
+
+        # 5. API Health Check: every API_HEALTH_CHECK_HOURS hours
         self.scheduler.add_job(
             self.health.check_api_health,
             trigger="interval",
@@ -116,7 +126,7 @@ class SentinelScheduler:
             replace_existing=True,
         )
 
-        # 5. Notion Health Check: every NOTION_HEALTH_CHECK_HOURS hours
+        # 6. Notion Health Check: every NOTION_HEALTH_CHECK_HOURS hours
         self.scheduler.add_job(
             self.health.check_notion_health,
             trigger="interval",
@@ -126,7 +136,7 @@ class SentinelScheduler:
             replace_existing=True,
         )
 
-        # 6. Active Block Pacing Poller: every 30 seconds
+        # 7. Active Block Pacing Poller: every 30 seconds
         self.scheduler.add_job(
             self.check_pacing_state_machine,
             trigger="interval",
@@ -164,6 +174,38 @@ class SentinelScheduler:
         except Exception:
             logger.exception("Failed to run scheduled weekly roast")
             await self.bot.send_message("❌ Weekly roast failed. Even the AI is disappointed in you.")
+
+    async def run_daily_snapshot(self) -> None:
+        """Persist a replayable end-of-day student state snapshot."""
+        if not hasattr(self.state, "save_daily_snapshot"):
+            logger.info("State DB does not support research snapshots; skipping.")
+            return
+
+        today = datetime.now(self.tz).strftime("%Y-%m-%d")
+        profile = await self._safe_student_profile()
+        unresolved_count = await self._safe_unresolved_count()
+        homework_count = await self._safe_homework_count()
+        revision_backlog_count = await self._safe_revision_backlog_count()
+
+        backlog_counts = {
+            "homework": homework_count,
+            "unresolved_concepts": unresolved_count,
+            "revision_backlog": revision_backlog_count,
+        }
+        backlog_counts["total"] = sum(value for value in backlog_counts.values() if isinstance(value, int))
+
+        snapshot = {
+            "date": today,
+            "version": SENTINEL_VERSION,
+            "timestamp": datetime.now(self.tz).isoformat(),
+            "student_profile": profile or {},
+            "fatigue": self._first_numeric(profile or {}, ("fatigue", "current_fatigue", "fatigue_level")),
+            "trust": self._first_numeric(profile or {}, ("trust", "trust_score", "system_trust")),
+            "concept_confidences": self._extract_concept_confidences(profile or {}),
+            "backlog_counts": backlog_counts,
+        }
+        await self.state.save_daily_snapshot(snapshot)
+        logger.info("Daily research snapshot saved for %s", today)
 
     # ── Active Block Pacing (Self-Healing State Machine) ───────────────────
 
@@ -290,3 +332,61 @@ class SentinelScheduler:
         await self.state.set_state("active_block_label", "")
         await self.state.set_state("block_start_time", "")
         await self.state.set_state("timeout_level_sent", "0")
+
+    async def _safe_student_profile(self) -> dict[str, Any] | None:
+        if not hasattr(self.state, "get_student_profile"):
+            return None
+        try:
+            return await self.state.get_student_profile()
+        except Exception:
+            logger.warning("Failed to load student profile for snapshot", exc_info=True)
+            return None
+
+    async def _safe_unresolved_count(self) -> int | None:
+        if not hasattr(self.state, "get_unresolved_concepts"):
+            return None
+        try:
+            unresolved = await self.state.get_unresolved_concepts()
+            return len(unresolved or [])
+        except Exception:
+            logger.warning("Failed to load unresolved concepts for snapshot", exc_info=True)
+            return None
+
+    async def _safe_homework_count(self) -> int | None:
+        try:
+            raw = await self.state.get_state("homework_pending")
+            return len(json.loads(raw)) if raw else 0
+        except Exception:
+            logger.warning("Failed to load homework backlog for snapshot", exc_info=True)
+            return None
+
+    async def _safe_revision_backlog_count(self) -> int | None:
+        notion = getattr(self.bot, "notion", None)
+        if not notion or not hasattr(notion, "get_revision_backlog"):
+            return None
+        try:
+            backlog = await notion.get_revision_backlog()
+            return len(backlog or [])
+        except Exception:
+            logger.warning("Failed to load Notion revision backlog for snapshot", exc_info=True)
+            return None
+
+    @staticmethod
+    def _first_numeric(source: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+        for key in keys:
+            value = source.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _extract_concept_confidences(profile: dict[str, Any]) -> dict[str, Any]:
+        for key in ("concept_confidences", "concept_confidence", "confidence_by_concept"):
+            value = profile.get(key)
+            if isinstance(value, dict):
+                return value
+        return {}

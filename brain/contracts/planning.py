@@ -42,9 +42,17 @@ class PlanningContext(BaseModel):
     homework: List[HomeworkItem]
     learning_confidence_level: int = Field(default=0, ge=0, le=4)
 
+class PlanningPrediction(BaseModel):
+    model_config = {"extra": "forbid"}
+    expected_cy: float = 0
+    expected_duration: float = 0
+    expected_completion: float = 0
+    expected_fatigue: Optional[float] = None
+
 class ExecutionBlock(BaseModel):
     model_config = {"extra": "forbid"}
     schema_version: Literal["1.0"] = "1.0"
+    decision_id: str = ""
     block_id: str = ""
     date: str = ""
     label: str = ""
@@ -69,16 +77,19 @@ class ExecutionBlock(BaseModel):
 class ExecutionPlan(BaseModel):
     model_config = {"extra": "forbid"}
     schema_version: Literal["1.0"] = "1.0"
+    decision_id: str = ""
     date: str
     day_type: str
     blocks: List[ExecutionBlock] = Field(default_factory=list)
     total_expected_cy: int = 0
     total_expected_time: int = 0
+    prediction: PlanningPrediction = Field(default_factory=PlanningPrediction)
     is_fallback: bool = False
 
 class PlanningResult(BaseModel):
     model_config = {"extra": "forbid"}
     schema_version: Literal["1.0"] = "1.0"
+    decision_id: str = ""
     plan: ExecutionPlan
     used_fallback: bool
     ai_provider: Optional[str] = None

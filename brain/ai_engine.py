@@ -104,7 +104,7 @@ _RETRY_BACKOFF_BASE = 1.5        # exponential backoff base in seconds
 _HEALTH_CHECK_TIMEOUT = 10.0     # shorter timeout for health pings
 
 # OpenAI-compatible providers (use the openai SDK)
-_OPENAI_COMPATIBLE = {"groq", "cerebras", "openrouter", "airforce", "g4f", "uncloseai", "g4f_pro"}
+_OPENAI_COMPATIBLE = {"groq", "cerebras", "openrouter", "g4f", "uncloseai", "g4f_pro", "gpt_5_5", "glm_5_2", "gpt_oss_120b", "groq_oss_120b"}
 # Providers that use raw httpx
 _HTTPX_PROVIDERS = {"gemini", "cohere", "huggingface", "cloudflare"}
 
@@ -124,7 +124,7 @@ class AIEngine:
         )
         # Per-provider stats
         self.stats: dict[str, ProviderStats] = {
-            provider: ProviderStats() for provider in FALLBACK_CHAIN
+            provider: ProviderStats() for provider in AI_PROVIDERS
         }
         # Lazily-initialized openai clients keyed by provider name
         self._openai_clients: dict[str, AsyncOpenAI] = {}
@@ -187,7 +187,7 @@ class AIEngine:
             profile = TaskProfile(task=task_type, **profile_dict)
             
             # 1. Background Intelligence Check
-            if self.registry and profile.allow_benchmark and self.registry.is_stale(hours=6):
+            if self.registry and profile.allow_benchmark and (await self.registry.is_stale(hours=6)):
                 logger.info(f"Task '{task_type}' allows benchmarking and cache is stale. Running background benchmark...")
                 await self.registry.run_benchmark(self)
                 
@@ -199,7 +199,7 @@ class AIEngine:
         if force_provider:
             providers = [force_provider.lower()] + [p for p in FALLBACK_CHAIN if p != force_provider.lower()]
         else:
-            providers = self._get_providers_for_task(task_type)
+            providers = await self._get_providers_for_task(task_type)
             
         errors: list[AIProviderError] = []
 
@@ -257,7 +257,7 @@ class AIEngine:
 
     # ── provider routing ──────────────────────────────────────────────────
 
-    def _get_providers_for_task(self, task_type: str) -> list[str]:
+    async def _get_providers_for_task(self, task_type: str) -> list[str]:
         """Return ordered provider list based on TaskProfile priority and latency budget.
         
         If latency_budget is small (e.g. < 5s) -> fast tier preferred.
@@ -268,12 +268,17 @@ class AIEngine:
         
         preferred = []
         # If models are explicitly preferred in the profile, prioritize them
+        # Note: preferred_models must use PROVIDER names (e.g. "g4f_pro"), not model names
         if profile.preferred_models:
             preferred.extend([m for m in profile.preferred_models if m in AI_PROVIDERS])
             
         # Dynamically fetch from the registry cache if available, else fallback to defaults
-        fast_list = self.registry.get_cached_ranking("fast") if self.registry else FAST_PROVIDERS
-        think_list = self.registry.get_cached_ranking("think") if self.registry else THINK_PROVIDERS
+        if self.registry:
+            fast_list = (await self.registry.get_cached_ranking("fast")) or FAST_PROVIDERS
+            think_list = (await self.registry.get_cached_ranking("think")) or THINK_PROVIDERS
+        else:
+            fast_list = FAST_PROVIDERS
+            think_list = THINK_PROVIDERS
             
         if profile.latency_budget <= 5 or profile.quality_target <= 7:
             preferred.extend([p for p in fast_list if p not in preferred])
@@ -427,9 +432,9 @@ class AIEngine:
             return await self._call_huggingface(
                 prompt, system_prompt, temperature, max_tokens, force_model,
             )
-        elif provider == "cloudflare":
+        elif provider.startswith("cf_") or provider == "cloudflare":
             return await self._call_cloudflare(
-                prompt, system_prompt, temperature, max_tokens, force_model,
+                provider, prompt, system_prompt, temperature, max_tokens, force_model,
             )
         elif provider == "ollama":
             return await self._call_ollama(
@@ -456,14 +461,17 @@ class AIEngine:
         api_key = get_api_key(provider)
         model = force_model if force_model else cfg["model"]
 
-        # Lazily initialise a client per provider
         if provider not in self._openai_clients:
-            self._openai_clients[provider] = AsyncOpenAI(
-                api_key=api_key,
-                base_url=cfg["base_url"],
-                timeout=_REQUEST_TIMEOUT,
-                max_retries=0,  # We handle retries ourselves
-            )
+            if provider in {"g4f", "g4f_pro", "gpt_5_5", "glm_5_2", "gpt_oss_120b"}:
+                from g4f.client import ClientFactory
+                self._openai_clients[provider] = ClientFactory.create_async_client("ollama.pro", api_key=api_key) if api_key else ClientFactory.create_async_client("ollama.pro")
+            else:
+                self._openai_clients[provider] = AsyncOpenAI(
+                    api_key=api_key,
+                    base_url=cfg["base_url"],
+                    timeout=_REQUEST_TIMEOUT,
+                    max_retries=0,  # We handle retries ourselves
+                )
 
         client = self._openai_clients[provider]
 
@@ -666,6 +674,7 @@ class AIEngine:
 
     async def _call_cloudflare(
         self,
+        provider: str,
         prompt: str,
         system_prompt: str | None,
         temperature: float,
@@ -677,13 +686,13 @@ class AIEngine:
         Docs: https://developers.cloudflare.com/workers-ai/
         """
         import os
-        cfg = AI_PROVIDERS["cloudflare"]
-        api_key = get_api_key("cloudflare")
+        cfg = AI_PROVIDERS[provider]
+        api_key = get_api_key(provider)
         account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
         model = force_model if force_model else cfg["model"]
 
         if not account_id:
-            raise AIProviderError("cloudflare", "CLOUDFLARE_ACCOUNT_ID not set")
+            raise AIProviderError(provider, "CLOUDFLARE_ACCOUNT_ID not set")
 
         url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
 
@@ -710,15 +719,20 @@ class AIEngine:
 
         data = resp.json()
         try:
-            text = data["result"]["response"]
-        except (KeyError, TypeError) as exc:
+            if "response" in data.get("result", {}):
+                text = data["result"]["response"]
+            elif "choices" in data.get("result", {}):
+                text = data["result"]["choices"][0]["message"]["content"]
+            else:
+                raise ValueError("No response or choices in result")
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
             raise AIProviderError(
-                "cloudflare",
+                provider,
                 f"Unexpected response structure: {json.dumps(data)[:300]}",
             ) from exc
 
         if not text:
-            raise AIProviderError("cloudflare", "Empty response text")
+            raise AIProviderError(provider, "Empty response text")
 
         return text.strip()
 

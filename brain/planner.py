@@ -6,10 +6,12 @@ Orchestrates the generation of adaptive daily study plans using AI and returns P
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timedelta
 
+from sentinel import config
 from sentinel.brain.protocol.snapshot import ProtocolSnapshot
-from sentinel.brain.contracts import PlanningResult, ExecutionPlan
+from sentinel.brain.contracts import PlanningResult, ExecutionPlan, PlanningPrediction
 from sentinel.brain.planning_context_builder import PlanningContextBuilder
 from sentinel.brain.planning_prompt_builder import PlanningPromptBuilder
 from sentinel.brain.planning_parser import PlanningParser
@@ -60,9 +62,18 @@ class DailyPlanner:
             PlanningResult containing the ExecutionPlan.
         """
         today = datetime.now().strftime("%Y-%m-%d")
+        decision_id = str(uuid.uuid4())
+        generated_at = datetime.now().isoformat()
 
         # 1. Build Context
         context = await self.context_builder.build_context(homework)
+        telemetry_inputs = {
+            "date": today,
+            "day_type": day_type,
+            "coaching_days": list(coaching_days),
+            "homework": [self._jsonable_item(item) for item in homework],
+            "planning_context": context.model_dump(mode="json"),
+        }
         
         # 2. Build Prompt
         prompt = self.prompt_builder.build_daily_prompt(
@@ -77,6 +88,7 @@ class DailyPlanner:
         warnings = []
         ai_provider = None
         model = None
+        raw_response = None
 
         try:
             # 3. Call AI
@@ -98,10 +110,20 @@ class DailyPlanner:
             plan = self.fallback.generate_fallback_plan(today, day_type, context.homework, self.protocol)
             used_fallback = True
 
+        plan.decision_id = decision_id
+        plan.prediction = self._normalize_prediction(plan)
+        for block in plan.blocks:
+            block.decision_id = decision_id
+
         plan = StudyBlockEngine.normalize_plan(plan, today)
+        plan.decision_id = decision_id
+        plan.prediction = self._normalize_prediction(plan)
+        for block in plan.blocks:
+            block.decision_id = decision_id
 
         # Wrap in PlanningResult
         result = PlanningResult(
+            decision_id=decision_id,
             plan=plan,
             used_fallback=used_fallback,
             ai_provider=ai_provider,
@@ -123,6 +145,7 @@ class DailyPlanner:
         # Save state (Serialize Pydantic models to JSON)
         await self.state.set_state("plan_date", today)
         await self.state.set_state("current_plan", result.model_dump_json())
+        await self.state.set_state("current_decision_id", decision_id)
         await self.state.set_state("current_block_index", "0")
         await self.state.set_state("blocks_skipped_today", "0")
         await self.state.set_state("day_type", day_type)
@@ -132,18 +155,53 @@ class DailyPlanner:
             level = await self.state.get_learning_confidence_level() if hasattr(self.state, "get_learning_confidence_level") else 0
             await self.state.save_planner_decision(
                 {
+                    "decision_id": decision_id,
+                    "version": config.SENTINEL_VERSION,
                     "date": today,
+                    "generated_at": generated_at,
                     "day_type": day_type,
                     "learning_confidence_level": level,
                     "used_fallback": used_fallback,
                     "block_ids": [block.block_id for block in plan.blocks],
                     "expected_cy": plan.total_expected_cy,
                     "expected_minutes": plan.total_expected_time,
+                    "inputs": telemetry_inputs,
+                    "planner_reasoning": {
+                        "planner_raw_response": raw_response,
+                        "critic_feedback": None,
+                        "coach_feedback": None,
+                        "path": "DailyPlanner.generate_daily_plan",
+                    },
+                    "plan": plan.model_dump(mode="json"),
+                    "prediction": plan.prediction.model_dump(mode="json"),
+                    "actual": None,
+                    "prediction_error": None,
                     "warnings": warnings,
                 }
             )
         
         return result
+
+    @staticmethod
+    def _jsonable_item(item):
+        if hasattr(item, "model_dump"):
+            return item.model_dump(mode="json")
+        if isinstance(item, dict):
+            return dict(item)
+        return item
+
+    @staticmethod
+    def _normalize_prediction(plan: ExecutionPlan) -> PlanningPrediction:
+        prediction = plan.prediction
+        if not isinstance(prediction, PlanningPrediction):
+            prediction = PlanningPrediction.model_validate(prediction or {})
+        if not prediction.expected_cy:
+            prediction.expected_cy = plan.total_expected_cy or sum(block.expected_cy for block in plan.blocks)
+        if not prediction.expected_duration:
+            prediction.expected_duration = plan.total_expected_time or sum(block.target_time for block in plan.blocks)
+        if not prediction.expected_completion:
+            prediction.expected_completion = 1.0
+        return prediction
 
     async def adapt_plan(self, user_request: str) -> PlanningResult:
         """Adapt the existing daily plan based on a user request."""

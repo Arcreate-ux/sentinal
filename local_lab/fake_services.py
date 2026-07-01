@@ -104,6 +104,7 @@ class FakeStateDB:
                 "faculty_history": [],
                 "prediction_history": [],
                 "planner_decisions": [],
+                "snapshots": [],
             },
         )
         for key, default in {
@@ -127,6 +128,7 @@ class FakeStateDB:
             "faculty_history": [],
             "prediction_history": [],
             "planner_decisions": [],
+            "snapshots": [],
         }.items():
             self.data.setdefault(key, default)
 
@@ -459,9 +461,97 @@ class FakeStateDB:
     async def save_planner_decision(self, decision: dict[str, Any]) -> None:
         row = dict(decision)
         row.setdefault("timestamp", utc_now())
+        decision_id = row.get("decision_id")
+        if decision_id:
+            self.data["planner_decisions"] = [
+                existing for existing in self.data["planner_decisions"]
+                if existing.get("decision_id") != decision_id
+            ]
         self.data["planner_decisions"].append(row)
         self._save()
         await self.record_timeline_event("planner.decision", row)
+
+    async def get_planner_decision(self, decision_id: str) -> dict[str, Any] | None:
+        row = next((row for row in self.data["planner_decisions"] if row.get("decision_id") == decision_id), None)
+        return dict(row) if row else None
+
+    async def get_latest_planner_decision_for_date(self, target_date: str) -> dict[str, Any] | None:
+        rows = [row for row in self.data["planner_decisions"] if row.get("date") == target_date]
+        if not rows:
+            return None
+        rows.sort(key=lambda row: row.get("timestamp", ""), reverse=True)
+        return dict(rows[0])
+
+    async def append_planner_actual(self, target_date: str, actual: dict[str, Any]) -> dict[str, Any] | None:
+        actual_row = dict(actual)
+        actual_row.setdefault("date", target_date)
+        actual_row.setdefault("computed_at", utc_now())
+        decision_id = actual_row.get("decision_id")
+
+        index = None
+        for idx, row in enumerate(self.data["planner_decisions"]):
+            if decision_id and row.get("decision_id") == decision_id:
+                index = idx
+                break
+        if index is None:
+            dated = [
+                (idx, row)
+                for idx, row in enumerate(self.data["planner_decisions"])
+                if row.get("date") == target_date
+            ]
+            if not dated:
+                return None
+            dated.sort(key=lambda item: item[1].get("timestamp", ""), reverse=True)
+            index, row = dated[0]
+            decision_id = row.get("decision_id")
+            actual_row["decision_id"] = decision_id
+
+        decision = self.data["planner_decisions"][index]
+        error = self._compute_prediction_error(decision.get("prediction") or {}, actual_row)
+        decision["actual"] = actual_row
+        decision["prediction_error"] = error
+        decision["actual_updated_at"] = utc_now()
+        decision.setdefault("actual_history", []).append(actual_row)
+        self._save()
+        payload = {
+            "decision_id": decision_id,
+            "date": target_date,
+            "actual": actual_row,
+            "prediction_error": error,
+        }
+        await self.record_timeline_event("planner.actual_appended", payload)
+        return payload
+
+    async def save_daily_snapshot(self, snapshot: dict[str, Any]) -> None:
+        row = dict(snapshot)
+        row.setdefault("timestamp", utc_now())
+        self.data["snapshots"] = [
+            existing for existing in self.data["snapshots"]
+            if existing.get("date") != row.get("date")
+        ]
+        self.data["snapshots"].append(row)
+        self._save()
+        await self.record_timeline_event("snapshot.daily", row)
+
+    @staticmethod
+    def _compute_prediction_error(prediction: dict[str, Any], actual: dict[str, Any]) -> dict[str, Any]:
+        pairs = {
+            "cy": ("expected_cy", "actual_cy"),
+            "duration": ("expected_duration", "actual_duration"),
+            "completion": ("expected_completion", "actual_completion"),
+            "fatigue": ("expected_fatigue", "actual_fatigue"),
+        }
+        errors = {}
+        for label, (pred_key, actual_key) in pairs.items():
+            predicted = prediction.get(pred_key)
+            observed = actual.get(actual_key)
+            if predicted is None or observed is None:
+                continue
+            try:
+                errors[label] = float(predicted) - float(observed)
+            except (TypeError, ValueError):
+                continue
+        return errors
 
     async def save_recovery_event(self, event_data: dict[str, Any]) -> None:
         row = dict(event_data)

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import httpx
 import asyncio
 
-from sentinel.config import NOTION_API_KEY, NOTION_VERSION, NOTION_DB1_ID, NOTION_DB4_ID, NOTION_DB2_ID, NOTION_DB3_ID
+from sentinel import config
 from sentinel.notion_client import schemas
 from sentinel.notion_client import formulas
 
@@ -38,8 +38,8 @@ logger = logging.getLogger("sentinel.notion")
 class NotionClient:
     def __init__(self) -> None:
         self.headers = {
-            "Authorization": f"Bearer {NOTION_API_KEY}",
-            "Notion-Version": NOTION_VERSION,
+            "Authorization": f"Bearer {config.NOTION_API_KEY}",
+            "Notion-Version": config.NOTION_VERSION,
             "Content-Type": "application/json"
         }
         self.client: httpx.AsyncClient | None = None
@@ -56,7 +56,7 @@ class NotionClient:
             
     @async_retry(max_retries=2, base_delay=1.0)
     async def check_health(self) -> bool:
-        if not self.client or not NOTION_API_KEY:
+        if not self.client or not config.NOTION_API_KEY:
             return False
         try:
             # Query users endpoint as a simple health check
@@ -67,8 +67,8 @@ class NotionClient:
 
     async def create_db4_if_not_exists(self) -> str:
         """Create or return the DB4 ID for System Logs."""
-        if NOTION_DB4_ID:
-            return NOTION_DB4_ID
+        if config.NOTION_DB4_ID:
+            return config.NOTION_DB4_ID
         logger.warning("DB4 not configured. Placeholder returned.")
         return "placeholder_db4_id"
 
@@ -85,7 +85,7 @@ class NotionClient:
         date_str: str,
     ) -> None:
         """Log a study block to Notion DB1."""
-        if not self.client or not NOTION_API_KEY:
+        if not self.client or not config.NOTION_API_KEY:
             logger.info("Skipping Notion logging (API key missing or client not initialized).")
             return
             
@@ -95,7 +95,7 @@ class NotionClient:
         
         try:
             resp = await self.client.post("/pages", json={
-                "parent": {"database_id": NOTION_DB1_ID},
+                "parent": {"database_id": config.NOTION_DB1_ID},
                 "properties": props
             })
             resp.raise_for_status()
@@ -106,7 +106,7 @@ class NotionClient:
     @async_retry(max_retries=3, base_delay=1.5)
     async def update_db2_db3(self, report: Any, assets: list = None, conceptual_mistake: bool = False) -> None:
         """Update DB2 (Revision Backlog) and DB3 (Error Log) based on a report."""
-        if not self.client or not NOTION_API_KEY:
+        if not self.client or not config.NOTION_API_KEY:
             return
             
         attempted = getattr(report, "attempted", 0) if not isinstance(report, dict) else report.get("attempted", 0)
@@ -121,7 +121,7 @@ class NotionClient:
             # Need revision, log to DB2
             try:
                 await self.client.post("/pages", json={
-                    "parent": {"database_id": NOTION_DB2_ID},
+                    "parent": {"database_id": config.NOTION_DB2_ID},
                     "properties": {
                         "Chapter / Module": {"title": [{"text": {"content": f"{subject} {ex_type}"}}]},
                         "Status": {"select": {"name": "Pending"}},
@@ -139,13 +139,13 @@ class NotionClient:
         # DB3 (Error Log) Logic
         has_assets = assets is not None and len(assets) > 0
         if conceptual_mistake or has_assets or needs_revision:
-            if NOTION_DB3_ID:
+            if config.NOTION_DB3_ID:
                 try:
                     title = f"Error Log: {subject} {ex_type}"
                     if has_assets:
                         title += f" ({len(assets)} assets)"
                     await self.client.post("/pages", json={
-                        "parent": {"database_id": NOTION_DB3_ID},
+                        "parent": {"database_id": config.NOTION_DB3_ID},
                         "properties": {
                             "Core Concept / Root Bug": {"title": [{"text": {"content": title}}]},
                             "Status": {"select": {"name": "Unresolved"}},
@@ -165,12 +165,12 @@ class NotionClient:
     @async_retry(max_retries=3, base_delay=1.0)
     async def create_db4_row(self, action_type: str, decision: str, reasoning: str, data_snapshot: str) -> None:
         """Log a system action to DB4 (Audit / Policy Log)."""
-        if not self.client or not NOTION_DB4_ID:
+        if not self.client or not config.NOTION_DB4_ID:
             return
             
         try:
             await self.client.post("/pages", json={
-                "parent": {"database_id": NOTION_DB4_ID},
+                "parent": {"database_id": config.NOTION_DB4_ID},
                 "properties": {
                     "Action Type": {"title": [{"text": {"content": action_type}}]},
                     "Decision": {"rich_text": [{"text": {"content": decision}}]},
@@ -185,11 +185,11 @@ class NotionClient:
     @async_retry(max_retries=2, base_delay=1.0)
     async def get_daily_stats(self, date_str: str) -> dict:
         """Fetch CY statistics directly from Notion DB1 for the given date."""
-        if not self.client or not NOTION_DB1_ID:
+        if not self.client or not config.NOTION_DB1_ID:
             return {"cy": 0}
             
         try:
-            resp = await self.client.post(f"/databases/{NOTION_DB1_ID}/query", json={
+            resp = await self.client.post(f"/databases/{config.NOTION_DB1_ID}/query", json={
                 "filter": {
                     "property": "Date",
                     "date": {
@@ -211,3 +211,71 @@ class NotionClient:
         except Exception as e:
             logger.error(f"Failed to get daily stats: {e}")
             return {"cy": 0}
+
+    @async_retry(max_retries=2, base_delay=1.0)
+    async def get_revision_backlog(self) -> list[dict]:
+        """Fetch pending revision items from DB2."""
+        if not self.client or not config.NOTION_DB2_ID:
+            return []
+            
+        try:
+            resp = await self.client.post(f"/databases/{config.NOTION_DB2_ID}/query", json={
+                "filter": {
+                    "property": "Status",
+                    "select": {
+                        "equals": "Pending"
+                    }
+                }
+            })
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            
+            backlog = []
+            for page in results:
+                props = page.get("properties", {})
+                title_prop = props.get("Chapter / Module", {})
+                if title_prop.get("title") and len(title_prop["title"]) > 0:
+                    text = title_prop["title"][0].get("text", {}).get("content", "")
+                    
+                    # Split subject and chapter (assumes format "Subject Chapter")
+                    parts = text.split(" ", 1)
+                    subj = parts[0] if len(parts) > 0 else "Unknown"
+                    chap = parts[1] if len(parts) > 1 else "Unknown"
+                    
+                    backlog.append({
+                        "subject": subj,
+                        "chapter": chap,
+                        "status": "Pending"
+                    })
+            return backlog
+        except Exception as e:
+            logger.error(f"Failed to get revision backlog: {e}")
+            return []
+
+    @async_retry(max_retries=2, base_delay=1.0)
+    async def read_db1_rows(self, filters: dict) -> list[dict]:
+        """Read rows from DB1 matching a filter."""
+        if not self.client or not config.NOTION_DB1_ID:
+            return []
+            
+        try:
+            resp = await self.client.post(f"/databases/{config.NOTION_DB1_ID}/query", json={
+                "filter": filters
+            })
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            
+            rows = []
+            for page in results:
+                props = page.get("properties", {})
+                row = {}
+                row["subject"] = props.get("Subject", {}).get("select", {}).get("name", "")
+                row["exercise_type"] = props.get("Exercise Type", {}).get("select", {}).get("name", "")
+                row["time_taken"] = props.get("Actual Time Spent (mins)", {}).get("number", 0)
+                row["attempted"] = props.get("Questions Attempted", {}).get("number", 0)
+                row["correct"] = props.get("Questions Correct", {}).get("number", 0)
+                rows.append(row)
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to read db1 rows: {e}")
+            return []

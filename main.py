@@ -47,6 +47,7 @@ from sentinel.brain.recovery_engine import RecoveryEngine
 from sentinel.brain.coaching_engine import CoachingEngine
 from sentinel.brain.learning_updater import LearningModelUpdater
 from sentinel.brain.knowledge_engine import KnowledgeEngine
+from sentinel.brain.personal_memory import PersonalMemory
 from sentinel.bot.events import KnowledgeExtracted
 
 # Configure logging
@@ -62,31 +63,7 @@ logging.basicConfig(
 logger = logging.getLogger("sentinel.main")
 
 
-def update_env_file(key: str, value: str) -> None:
-    """Helper to persist auto-created config values back to the local .env file."""
-    env_path = config.PROJECT_ROOT / ".env"
-    if not env_path.exists():
-        logger.warning(".env file not found. Could not persist %s=%s automatically.", key, value)
-        return
-        
-    try:
-        content = env_path.read_text(encoding="utf-8")
-        lines = content.splitlines()
-        updated = False
-        
-        for i, line in enumerate(lines):
-            if line.strip().startswith(f"{key}="):
-                lines[i] = f"{key}={value}"
-                updated = True
-                break
-                
-        if not updated:
-            lines.append(f"{key}={value}")
-            
-        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        logger.info("Successfully updated .env file with %s=%s", key, value)
-    except Exception as exc:
-        logger.warning("Failed to update .env file: %s", exc)
+# update_env_file removed for 12-factor cloud compatibility
 
 
 class SentinelApplication:
@@ -106,6 +83,7 @@ class SentinelApplication:
         self.scheduler: SentinelScheduler | None = None
         self.reflection_engine: ReflectionEngine | None = None
         self.knowledge_engine: KnowledgeEngine | None = None
+        self.personal_memory: PersonalMemory | None = None
         
         self.is_shutting_down = False
 
@@ -138,7 +116,7 @@ class SentinelApplication:
             try:
                 db4_id = await self.notion_client.create_db4_if_not_exists()
                 logger.info("📌 Auto-resolved NOTION_DB4_ID: %s", db4_id)
-                update_env_file("NOTION_DB4_ID", db4_id)
+                config.NOTION_DB4_ID = db4_id
             except Exception as exc:
                 logger.critical("❌ Failed to resolve or create Notion DB4 (System Log): %s", exc)
                 sys.exit(1)
@@ -157,9 +135,10 @@ class SentinelApplication:
         self.coaching_engine = CoachingEngine(self.ai_engine, self.state_db, self.notion_client)
         self.learning_updater = LearningModelUpdater(self.state_db)
         self.reflection_engine = ReflectionEngine(self.ai_engine, self.state_db, self.notion_client)
+        self.personal_memory = PersonalMemory(self.ai_engine, self.state_db)
         
         # Wiring Event Subscriptions
-        self.event_bus.subscribe(KnowledgeExtracted, self.learning_updater.handle_knowledge_extracted)
+        self.event_bus.subscribe("KnowledgeExtracted", self.learning_updater.handle_knowledge_extracted)
         
         self.health_monitor = HealthMonitor(
             ai_engine=self.ai_engine,
@@ -200,7 +179,9 @@ class SentinelApplication:
             reflection_engine=self.reflection_engine,
             knowledge_engine=self.knowledge_engine,
             analyzer=self.analyzer,
-            notion_client=self.notion_client
+            notion_client=self.notion_client,
+            personal_memory=self.personal_memory,
+            ai_engine=self.ai_engine,
         )
 
         # 5. Initialize Telegram Bot
@@ -217,6 +198,7 @@ class SentinelApplication:
             parser=self.parser,
         )
         self.bot.orchestrator = self.orchestrator
+        self.bot.reflection_engine = self.reflection_engine
         bot_app = self.bot.setup()
 
         # 6. Initialize Scheduler
@@ -232,6 +214,7 @@ class SentinelApplication:
         bot_app.bot_data["scheduler"] = self.scheduler
         bot_app.bot_data["reflection_engine"] = self.reflection_engine
         bot_app.bot_data["knowledge_engine"] = self.knowledge_engine
+        bot_app.bot_data["personal_memory"] = self.personal_memory
 
         # 7. Start Scheduler
         self.scheduler.start()

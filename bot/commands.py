@@ -9,6 +9,9 @@ import json
 import logging
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+_IST = ZoneInfo('Asia/Kolkata')
 from telegram import Update
 from telegram.ext import ContextTypes
 from sentinel.brain.contracts import PlanningResult, ExecutionPlan
@@ -48,7 +51,7 @@ def _state_supports(state, method_name: str) -> bool:
     return callable(getattr(type(state), method_name, None))
 
 async def _planned_blocks_for_today(state, plan=None) -> list[dict]:
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(_IST).strftime("%Y-%m-%d")
     if _state_supports(state, "get_study_blocks"):
         blocks = await state.get_study_blocks(today)
         if blocks:
@@ -66,7 +69,7 @@ async def _planned_blocks_for_today(state, plan=None) -> list[dict]:
     ]
 
 async def _resolve_done_block(state, selector: str, plan=None) -> dict | None:
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(_IST).strftime("%Y-%m-%d")
     if _state_supports(state, "get_study_block_by_identifier"):
         block = await state.get_study_block_by_identifier(selector, today)
         if block:
@@ -108,17 +111,27 @@ async def _prompt_done_block_selection(update: Update, state, plan=None) -> None
     await _reply(update, "\n".join(lines))
 # ── /start ──────────────────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Welcome message + register chat_id."""
+    """Welcome message + register chat_id. Triggers onboarding if first run."""
     chat_id = str(update.effective_chat.id)
-    _state(context).set_state("chat_id", chat_id)
+    state = _state(context)
+    await state.set_state("chat_id", chat_id)
     logger.info("Registered chat_id: %s", chat_id)
+
+    # Check if onboarding is needed
+    from sentinel.brain.onboarding import OnboardingEngine
+    onboarding = OnboardingEngine(state)
+    if not await onboarding.is_onboarded():
+        first_question = await onboarding.get_first_question()
+        await _reply(update, first_question)
+        return
+
+    # Already onboarded — show welcome
+    profile = await state.get_student_profile()
+    name = profile.get("name", "Soldier") if profile else "Soldier"
     await _reply(update, (
         f"⚔️ {BOT_NAME} ONLINE\n"
         f"{'━' * 24}\n"
-        f"Chat registered: {chat_id}\n\n"
-        f"I'm your competitive rival. Every day I'll track your study "
-        f"execution, compare you against yesterday-you, and make sure "
-        f"you never get comfortable.\n\n"
+        f"Welcome back, {name}.\n\n"
         f"Target: IIT Bombay CS.\n"
         f"Daily CY target: {DAILY_CY_TARGET}.\n\n"
         f"Commands: /help\n"
@@ -128,7 +141,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show the current day plan, or generate a new one."""
     state = _state(context)
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(_IST).strftime("%Y-%m-%d")
     plan_date = await state.get_state("plan_date")
     if plan_date == today:
         raw = await state.get_state("current_plan")
@@ -141,7 +154,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _reply(update, "⏳ Generating today's plan…")
     coaching_days_raw = await state.get_state("coaching_days")
     coaching_days = json.loads(coaching_days_raw) if coaching_days_raw else []
-    weekday = datetime.now().strftime("%A")[:3]
+    weekday = datetime.now(_IST).strftime("%A")[:3]
     day_type = "coaching" if weekday in coaching_days else "self_study"
     homework_raw = await state.get_state("homework_pending")
     homework = json.loads(homework_raw) if homework_raw else []
@@ -156,7 +169,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show daily CY progress so far."""
     state = _state(context)
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(_IST).strftime("%Y-%m-%d")
     raw = await state.get_state("current_plan")
     if not raw:
         await _reply(update, "📭 No plan found for today. Use /plan first.")
@@ -293,7 +306,7 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     skipped_entry = skipped.model_dump()
     skipped_entry["status"] = "SKIPPED"
     skipped_entry["actual_cy"] = 0
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(_IST).strftime("%Y-%m-%d")
     if _state_supports(state, "skip_study_block") and skipped_entry.get("block_id"):
         await state.skip_study_block(skipped_entry["block_id"], reason)
     await state.save_completed_block(today, skipped_entry)
@@ -312,7 +325,7 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     scheduler = _scheduler(context)
     if scheduler and idx + 1 < len(blocks):
         try:
-            scheduler.cancel_block_jobs()
+            await scheduler.cancel_block_jobs()
             # The scheduler will pick up the next block automatically
         except Exception:
             logger.warning("Failed to update scheduler after skip", exc_info=True)
@@ -320,7 +333,7 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_sick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Activate off-day protocol."""
     state = _state(context)
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(_IST).strftime("%Y-%m-%d")
     await state.set_state("day_type", "off_day")
     await state.set_state(f"off_day_{today}", "true")
     # Log to DB4
@@ -337,7 +350,7 @@ async def cmd_sick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     scheduler = _scheduler(context)
     if scheduler:
         try:
-            scheduler.cancel_block_jobs()
+            await scheduler.cancel_block_jobs()
         except Exception:
             logger.warning("Failed to cancel scheduled blocks", exc_info=True)
     await _reply(update, (
@@ -351,7 +364,7 @@ async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Force Notion data sync."""
     await _reply(update, "🔄 Syncing with Notion…")
     try:
-        stats = await _notion(context).get_daily_stats(datetime.now().strftime("%Y-%m-%d"))
+        stats = await _notion(context).get_daily_stats(datetime.now(_IST).strftime("%Y-%m-%d"))
         await _reply(update, f"✅ Sync complete.\n\nToday's Notion stats:\n{json.dumps(stats, indent=2)}")
     except Exception:
         logger.exception("Notion sync failed")
@@ -368,7 +381,7 @@ async def cmd_scores(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     parsed_scores = await _parser(context).parse_test_scores(args[1])
     scores = parsed_scores.model_dump() if hasattr(parsed_scores, "model_dump") else dict(parsed_scores)
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(_IST).strftime("%Y-%m-%d")
     scores["date"] = today
     # Extract optional notes
     notes = ""
@@ -414,7 +427,7 @@ async def cmd_scores(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_roast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """On-demand performance roast."""
     await _reply(update, "🔥 Preparing your roast…")
-    today = datetime.now()
+    today = datetime.now(_IST)
     from datetime import timedelta
     # Find the start of the current week (Monday)
     # Find the start of the current week (Monday)
@@ -498,60 +511,48 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _finalize_done_report(update, context, current_block_data, parsed_response.get("parsed_data", {}), parsed_response.get("historical_insight", ""))
 
 async def _finalize_done_report(update: Update, context: ContextTypes.DEFAULT_TYPE, current_block, parsed_data: dict, historical_insight: str = "") -> None:
-    knowledge_engine = context.bot_data.get("knowledge_engine")
-    if not knowledge_engine:
-        await _reply(update, "System error: Knowledge Engine not wired.")
-        return
-        
-    await _reply(update, "📦 Packing knowledge assets into permanent memory...")
-    
-    result = await knowledge_engine.extract_assets(current_block, parsed_data)
-    if result.get("error"):
-        await _reply(update, f"Error saving assets: {result['error']}")
-        return
-        
-    assets = result.get("concept_assets", [])
-    
     state = _state(context)
-    # Move to next block
-    raw_plan = await state.get_state("current_plan")
-    _result = PlanningResult.model_validate_json(raw_plan)
-    plan = _result.plan
-    idx_raw = await state.get_state("current_block_index")
-    try:
-        idx = int(idx_raw) if idx_raw else 0
-    except (ValueError, TypeError):
-        idx = 0
-        
-    # Save completion to database
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(_IST).strftime("%Y-%m-%d")
+    
+    # 1. Compute CY and Save to DB First (Deterministic)
     from sentinel.notion_client.formulas import cognitive_yield
     attempted = parsed_data.get("attempted", 0)
     correct = parsed_data.get("correct", 0)
     time_taken = parsed_data.get("time_taken") or current_block.get("target_time", 0)
     actual_cy = cognitive_yield(
-        T=time_taken,
-        A=attempted,
-        C=correct,
+        T=time_taken, A=attempted, C=correct,
         exercise_type=current_block.get("exercise_type", "Ex 1A"),
         subject=current_block.get("subject", "Physics"),
     )
+    
     block_data = dict(current_block)
     block_data.update({
         "status": "COMPLETED",
-        "attempted": attempted,
-        "correct": correct,
-        "T": time_taken,
-        "A": attempted,
-        "C": correct,
+        "attempted": attempted, "correct": correct,
+        "T": time_taken, "A": attempted, "C": correct,
         "actual_cy": actual_cy,
     })
+    
     if _state_supports(state, "complete_study_block") and block_data.get("block_id"):
         transition = await state.complete_study_block(block_data["block_id"], block_data)
         if transition.get("duplicate"):
             await _reply(update, f"Duplicate reflection ignored: {block_data.get('label') or block_data.get('block_label')} is already completed.")
             return
+            
     await state.save_completed_block(today, block_data)
+    
+    # 2. Extract Assets (Best Effort Background AI)
+    knowledge_engine = context.bot_data.get("knowledge_engine")
+    assets = []
+    if knowledge_engine:
+        await _reply(update, "📦 Packing knowledge assets into permanent memory...")
+        result = await knowledge_engine.extract_assets(current_block, parsed_data)
+        if result.get("error"):
+            await _reply(update, f"⚠️ Error extracting assets (block saved anyway): {result['error']}")
+        else:
+            assets = result.get("concept_assets", [])
+    
+    # 3. Update Notion
     notion = context.bot_data.get("notion")
     if notion:
         try:
@@ -559,11 +560,8 @@ async def _finalize_done_report(update: Update, context: ContextTypes.DEFAULT_TY
                 task_name=f"{current_block.get('block_label', 'Block')}: {current_block.get('subject', 'Physics')} {current_block.get('exercise_type', 'Ex 1A')}",
                 subject=current_block.get("subject", "Physics"),
                 exercise_type=current_block.get("exercise_type", "Ex 1A"),
-                time_taken=time_taken,
-                attempted=attempted,
-                correct=correct,
-                block=current_block.get("block_label", "Block"),
-                date_str=today,
+                time_taken=time_taken, attempted=attempted, correct=correct,
+                block=current_block.get("block_label", "Block"), date_str=today,
             )
             await notion.update_db2_db3(
                 {
@@ -578,13 +576,23 @@ async def _finalize_done_report(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             logger.warning("Failed to log /done result to Notion", exc_info=True)
     
+    # 4. Move to next block
+    raw_plan = await state.get_state("current_plan")
+    _result = PlanningResult.model_validate_json(raw_plan)
+    plan = _result.plan
+    idx_raw = await state.get_state("current_block_index")
+    try:
+        idx = int(idx_raw) if idx_raw else 0
+    except (ValueError, TypeError):
+        idx = 0
+        
     await state.set_state("current_block_index", str(idx + 1))
     
     # Notify scheduler
     scheduler = _scheduler(context)
     if scheduler:
         try:
-            scheduler.cancel_block_jobs()
+            await scheduler.cancel_block_jobs()
         except Exception:
             pass
             
@@ -598,6 +606,7 @@ async def _finalize_done_report(update: Update, context: ContextTypes.DEFAULT_TY
         f"Use /doubts to see your unresolved items."
     )
     
+    await state.set_state("conversation_state", "default")
     await _reply(update, msg)
 
 # ── /doubts (Faculty Formatter) ─────────────────────────────────────────────
@@ -623,6 +632,198 @@ async def cmd_doubts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
     await _reply(update, "\n".join(lines))
 
+# ── /jee ────────────────────────────────────────────────────────────────────
+async def cmd_jee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """JEE countdown and reality check."""
+    state = _state(context)
+    profile = await state.get_student_profile()
+
+    from datetime import date
+    today = date.today()
+
+    if profile:
+        main_date = date.fromisoformat(profile.get("jee_main_date", "2028-01-20"))
+        adv_date = date.fromisoformat(profile.get("jee_advanced_date", "2028-06-01"))
+    else:
+        main_date = date(2028, 1, 20)
+        adv_date = date(2028, 6, 1)
+
+    days_main = (main_date - today).days
+    days_adv = (adv_date - today).days
+
+    # Get streak
+    streak = await state.get_streak("daily_target")
+    streak_count = streak.get("current_count", 0) if streak else 0
+
+    # Get latest test
+    latest_test = await state.get_latest_test_score()
+    test_line = "No test scores yet."
+    if latest_test:
+        test_line = (
+            f"Physics {latest_test.get('p_score', 0)}/{latest_test.get('p_total', 120)} | "
+            f"Chem {latest_test.get('c_score', 0)}/{latest_test.get('c_total', 120)} | "
+            f"Maths {latest_test.get('m_score', 0)}/{latest_test.get('m_total', 120)}"
+        )
+
+    # Get unresolved concepts count
+    unresolved = await state.get_unresolved_concepts()
+    doubts_count = len(unresolved) if unresolved else 0
+
+    lines = [
+        f"⏰ JEE COUNTDOWN",
+        f"{'━' * 24}",
+        f"JEE Main:     {days_main} days",
+        f"JEE Advanced: {days_adv} days",
+        f"",
+        f"🔥 Streak: {streak_count} days",
+        f"📝 Last test: {test_line}",
+        f"❓ Unresolved doubts: {doubts_count}",
+    ]
+    await _reply(update, "\n".join(lines))
+
+# ── /backlog ────────────────────────────────────────────────────────────────
+async def cmd_backlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show all pending work: homework, doubts, revision."""
+    state = _state(context)
+
+    # Homework pending
+    hw_raw = await state.get_state("homework_pending")
+    homework = json.loads(hw_raw) if hw_raw else []
+
+    # Unresolved concepts by subject
+    unresolved = await state.get_unresolved_concepts()
+    subj_counts = {}
+    for c in (unresolved or []):
+        s = c.get("subject", "Other")
+        subj_counts[s] = subj_counts.get(s, 0) + 1
+
+    lines = [
+        f"📋 BACKLOG",
+        f"{'━' * 24}",
+        f"Homework pending: {len(homework)} items",
+    ]
+    for hw in homework[:5]:
+        subj = hw.get("subject", "?")
+        ex = hw.get("exercise_type", "?")
+        ch = hw.get("chapter", "")
+        lines.append(f"  • {subj} {ch} {ex}")
+    if len(homework) > 5:
+        lines.append(f"  ... and {len(homework) - 5} more")
+
+    lines.append(f"")
+    lines.append(f"Unresolved doubts: {len(unresolved or [])}")
+    for subj, count in sorted(subj_counts.items()):
+        lines.append(f"  {subj}: {count}")
+
+    await _reply(update, "\n".join(lines))
+
+# ── /faculty ────────────────────────────────────────────────────────────────
+async def cmd_faculty(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show doubt list for a specific teacher or subject."""
+    state = _state(context)
+    parts = update.message.text.split(None, 1)
+    query = parts[1].strip() if len(parts) > 1 else None
+
+    # Resolve query to a subject using memory system
+    subject = None
+    faculty_name = query
+    if query:
+        memory = context.bot_data.get("personal_memory")
+        if memory:
+            subject = await memory.resolve_subject(query)
+        if not subject:
+            # Check if query is itself a subject name
+            for s in SUBJECTS:
+                if query.lower() in s.lower() or s.lower() in query.lower():
+                    subject = s
+                    break
+
+    if not subject and not query:
+        # No argument — show all unresolved
+        profile = await state.get_student_profile()
+        faculty = profile.get("faculty", {}) if profile else {}
+        lines = [f"🧑‍🏫 FACULTY DOUBT LIST\n"]
+        for subj in SUBJECTS:
+            teacher = faculty.get(subj, "")
+            unresolved = await state.get_unresolved_concepts(subject=subj)
+            if unresolved:
+                header = f"{subj}" + (f" ({teacher})" if teacher else "")
+                lines.append(f"▸ {header}: {len(unresolved)} doubts")
+                for c in unresolved[:3]:
+                    lines.append(f"  • {c.get('concept_name', '?')}")
+                if len(unresolved) > 3:
+                    lines.append(f"  ... +{len(unresolved) - 3} more")
+                lines.append("")
+        if len(lines) == 1:
+            lines.append("No unresolved doubts! You're clear.")
+        await _reply(update, "\n".join(lines))
+        return
+
+    if not subject:
+        await _reply(update, f"Couldn't resolve '{query}' to a subject. Try /faculty Physics or /faculty <teacher name>.")
+        return
+
+    unresolved = await state.get_unresolved_concepts(subject=subject)
+    if not unresolved:
+        await _reply(update, f"No unresolved doubts for {subject}! 🎯")
+        return
+
+    lines = [f"🧑‍🏫 DOUBTS FOR {faculty_name or subject}" + (f" ({subject})" if faculty_name and faculty_name != subject else ""), ""]
+    for i, concept in enumerate(unresolved, 1):
+        lines.append(f"{i}. {concept.get('concept_name', '?')}")
+        chapter = concept.get('chapter', '')
+        if chapter:
+            lines.append(f"   Chapter: {chapter}")
+        questions = concept.get('linked_questions', [])
+        if questions:
+            lines.append(f"   Questions: {', '.join(questions[:5])}")
+        understanding = concept.get('current_understanding', '')
+        if understanding:
+            lines.append(f"   My understanding: {understanding}")
+        lines.append("")
+
+    lines.append("Show this on your phone when you walk into class. 📱")
+    await _reply(update, "\n".join(lines))
+
+# ── /remember ───────────────────────────────────────────────────────────────
+async def cmd_remember(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Save something to personal memory."""
+    args = update.message.text.split(None, 1)
+    if len(args) < 2:
+        await _reply(update, "Usage: /remember <something to remember>\nExample: /remember Shantanu sir is my chemistry teacher")
+        return
+    memory = context.bot_data.get("personal_memory")
+    if not memory:
+        await _reply(update, "⚠️ Memory system not available.")
+        return
+    result = await memory.save(args[1])
+    summary = result.get("summary", args[1])
+    rtype = result.get("resolved_type", "fact")
+    await _reply(update, f"🧠 Noted ({rtype}): {summary}")
+
+# ── /feedback ───────────────────────────────────────────────────────────────
+async def cmd_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Capture feedback about the bot's last response."""
+    state = _state(context)
+    args = update.message.text.split(None, 1)
+
+    if len(args) < 2:
+        await _reply(update, "Usage: /feedback <what went wrong>\nExample: /feedback it listed physics doubts but I asked for chemistry")
+        return
+
+    feedback_text = args[1]
+    # Get recent chat history for context
+    recent = await state.get_recent_chat_history(limit=4)
+    conv_state = await state.get_state("conversation_state")
+
+    await state.save_feedback({
+        "feedback_text": feedback_text,
+        "recent_conversation": recent,
+        "conversation_state": conv_state,
+        "resolved": False,
+    })
+    await _reply(update, "📝 Feedback saved. This helps me improve. Thanks.")
+
 # ── /help ───────────────────────────────────────────────────────────────────
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show all available commands."""
@@ -632,7 +833,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"📋 /plan — Show or generate daily plan\n"
         f"📊 /status — CY progress today\n"
         f"✅ /done <report> — Finish block and reflect\n"
-        f"🧑‍🏫 /doubts [subject] — Show faculty doubts\n"
+        f"🧑‍🏫 /doubts [subject] — Show unresolved concepts\n"
+        f"🧑‍🏫 /faculty [name] — Doubt list for coaching\n"
+        f"📋 /backlog — All pending work\n"
+        f"⏰ /jee — JEE countdown\n"
         f"📝 /homework <details> — Log homework\n"
         f"📅 /week <days> — Set coaching days\n"
         f"⏭️ /skip [reason] — Skip current block\n"
@@ -640,6 +844,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"🔄 /sync — Force Notion sync\n"
         f"📝 /scores <results> — Log test scores\n"
         f"🔥 /roast — On-demand roast\n"
+        f"🧠 /remember <fact> — Save to memory\n"
+        f"📝 /feedback <text> — Report an issue\n"
         f"❓ /help — This message"
     ))
 
@@ -666,6 +872,11 @@ COMMANDS = [
     cmd_roast,
     cmd_done,
     cmd_doubts,
+    cmd_jee,
+    cmd_backlog,
+    cmd_faculty,
+    cmd_remember,
+    cmd_feedback,
     cmd_help,
     cmd_mode,
 ]

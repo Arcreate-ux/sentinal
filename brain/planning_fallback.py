@@ -3,7 +3,9 @@ SENTINEL — Fallback Planner (brain/planning_fallback.py)
 Generates a deterministic study plan if the AI API fails, using the ProtocolSnapshot.
 """
 
-from sentinel.brain.contracts import ExecutionPlan, ExecutionBlock
+from typing import Any
+
+from sentinel.brain.contracts import ExecutionPlan, ExecutionBlock, PlanningPrediction
 from sentinel.brain.protocol.snapshot import ProtocolSnapshot
 
 class FallbackPlanner:
@@ -28,11 +30,12 @@ class FallbackPlanner:
             # Pick from homework if available
             if i < len(homework):
                 hw = homework[i]
-                subject = hw.subject
-                chapter = hw.chapter
-                ex_type = hw.exercise_type
-                q_count = hw.questions
-                questions = hw.range or (f"{q_count}Q" if q_count else "")
+                subject = self._get_homework_value(hw, "subject", "Physics")
+                chapter = self._get_homework_value(hw, "chapter", "?")
+                ex_type = self._get_homework_value(hw, "exercise_type", "Ex 1A")
+                q_count = int(self._get_homework_value(hw, "questions", 0) or 0)
+                question_range = self._get_homework_value(hw, "range", None)
+                questions = question_range or (f"{q_count}Q" if q_count else "")
                 block_type = "homework"
             else:
                 subject = rotation[i]
@@ -71,5 +74,17 @@ class FallbackPlanner:
             blocks=blocks,
             total_expected_cy=total_cy,
             total_expected_time=total_time,
+            prediction=PlanningPrediction(
+                expected_cy=total_cy,
+                expected_duration=total_time,
+                expected_completion=0.9,
+                expected_fatigue=None,
+            ),
             is_fallback=True
         )
+
+    @staticmethod
+    def _get_homework_value(homework: Any, key: str, default: Any = None) -> Any:
+        if isinstance(homework, dict):
+            return homework.get(key, default)
+        return getattr(homework, key, default)

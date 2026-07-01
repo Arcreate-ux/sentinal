@@ -11,10 +11,11 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
-from pymongo import AsyncMongoClient
+from pymongo import AsyncMongoClient, ReturnDocument
 from pymongo.errors import ConnectionFailure
 
 from sentinel import config
+from sentinel.brain.study_blocks import StudyBlockEngine
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,16 @@ class StateDB:
             await db.streaks.create_index("streak_type", unique=True)
             await db.chat_history.create_index("timestamp")
             await db.completed_blocks.create_index("date")
+            await db.study_blocks.create_index("date")
+            await db.study_blocks.create_index("block_id", unique=True)
+            await db.timeline.create_index("timestamp")
+            await db.planner_decisions.create_index("date")
+            await db.planner_decisions.create_index("decision_id", unique=True, sparse=True)
+            await db.snapshots.create_index("date", unique=True)
+            await db.recovery_history.create_index("date")
+            await db.faculty_history.create_index("date")
+            await db.prediction_history.create_index("date")
+            await db.learning_events.create_index("timestamp")
             await db.archived_questions.create_index("timestamp")
             await db.concept_assets.create_index("concept_name", unique=True)
             await db.skill_assets.create_index([("skill_name", 1), ("subject", 1)], unique=True)
@@ -98,9 +109,10 @@ class StateDB:
     async def save_completed_block(self, date: str, block_data: dict[str, Any]) -> None:
         """Save a completed/skipped block to a dated collection."""
         db = self._get_db()
-        block_data["date"] = date
-        block_data["saved_at"] = datetime.now(timezone.utc).isoformat()
-        await db.completed_blocks.insert_one(block_data)
+        block = dict(block_data)
+        block["date"] = date
+        block["saved_at"] = datetime.now(timezone.utc).isoformat()
+        await db.completed_blocks.insert_one(block)
         
         # Also keep a fast index for "today's blocks"
         await db.system_state.update_one(
@@ -131,23 +143,26 @@ class StateDB:
     # STUDY BLOCKS (FIRST-CLASS OBJECTS)
     # ─────────────────────────────────────────────────────────────────────
     async def save_study_blocks(self, target_date: str, blocks: list[dict[str, Any]]) -> None:
-        """Save normalized study blocks to the database."""
+        """Replace one day's planned Study Blocks with normalized permanent objects."""
         db = self._get_db()
-        # Delete any existing blocks for this date so we can safely replace them
+        normalized = [
+            StudyBlockEngine.normalize_block(block, target_date, idx + 1).model_dump()
+            for idx, block in enumerate(blocks)
+        ]
+        now = datetime.now(timezone.utc).isoformat()
+        for block in normalized:
+            block["updated_at"] = now
+
         await db.study_blocks.delete_many({"date": target_date})
-        
-        if blocks:
-            # Add updated timestamp to all blocks
-            for b in blocks:
-                b["updated_at"] = datetime.now(timezone.utc).isoformat()
-            await db.study_blocks.insert_many(blocks)
+        if normalized:
+            await db.study_blocks.insert_many(normalized)
             
         await self.record_timeline_event(
             "study_blocks.planned",
             {
                 "date": target_date,
-                "block_ids": [block.get("block_id") for block in blocks],
-                "count": len(blocks),
+                "block_ids": [block["block_id"] for block in normalized],
+                "count": len(normalized),
             },
         )
 
@@ -168,68 +183,58 @@ class StateDB:
         return rows
 
     async def get_study_block_by_identifier(self, identifier: str, target_date: str | None = None) -> dict[str, Any] | None:
-        """Fetch a specific study block by its ID or human-readable label."""
-        db = self._get_db()
-        query = {"$or": [{"block_id": identifier}, {"label": identifier}, {"block_label": identifier}]}
-        if target_date:
-            query["date"] = target_date
-            
-        return await db.study_blocks.find_one(query, {"_id": 0})
+        """Fetch a block by immutable ID, human label, or 1-based list index."""
+        blocks = await self.get_study_blocks(target_date=target_date)
+        return StudyBlockEngine.find_block(blocks, identifier)
 
     async def update_study_block(self, block_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         """Update a specific study block."""
         db = self._get_db()
-        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        clean_updates = dict(updates)
+        clean_updates["updated_at"] = datetime.now(timezone.utc).isoformat()
         
         result = await db.study_blocks.find_one_and_update(
             {"block_id": block_id},
-            {"$set": updates},
-            return_document=True,
+            {"$set": clean_updates},
+            return_document=ReturnDocument.AFTER,
             projection={"_id": 0}
         )
         if result:
-            await self.record_timeline_event("study_block.updated", {"block_id": block_id, "updates": list(updates.keys())})
+            await self.record_timeline_event(
+                "study_block.updated",
+                {
+                    "block_id": block_id,
+                    "status": result.get("status"),
+                    "updates": {key: clean_updates.get(key) for key in sorted(clean_updates)},
+                },
+            )
         return result
 
     async def complete_study_block(self, block_id: str, actual: dict[str, Any]) -> dict[str, Any]:
         """Mark a block as completed with actual metrics."""
         db = self._get_db()
-        
-        updates = {
-            "status": "COMPLETED",
-            "actual_time": actual.get("actual_time", 0),
-            "actual_attempted": actual.get("attempted", 0),
-            "actual_correct": actual.get("correct", 0),
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }
-        
-        result = await db.study_blocks.find_one_and_update(
-            {"block_id": block_id},
-            {"$set": updates},
-            return_document=True,
-            projection={"_id": 0}
-        )
-        if result:
-            await self.record_timeline_event("study_block.completed", {"block_id": block_id, "metrics": actual})
-        return result or {}
+        block = await db.study_blocks.find_one({"block_id": block_id}, {"_id": 0})
+        if not block:
+            raise ValueError(f"Unknown study block: {block_id}")
+        if str(block.get("status", "")).upper() == "COMPLETED":
+            return {"ok": False, "duplicate": True, "block": block}
+
+        updates = dict(actual)
+        updates["status"] = "COMPLETED"
+        updated = await self.update_study_block(block_id, updates)
+        return {"ok": True, "duplicate": False, "block": updated}
 
     async def skip_study_block(self, block_id: str, reason: str = "") -> dict[str, Any] | None:
         """Mark a block as skipped."""
-        db = self._get_db()
-        updates = {
-            "status": "SKIPPED",
-            "reason_skipped": reason,
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }
-        result = await db.study_blocks.find_one_and_update(
-            {"block_id": block_id},
-            {"$set": updates},
-            return_document=True,
-            projection={"_id": 0}
+        return await self.update_study_block(
+            block_id,
+            {
+                "status": "SKIPPED",
+                "skip_reason": reason,
+                "reason_skipped": reason,
+                "actual_cy": 0,
+            },
         )
-        if result:
-            await self.record_timeline_event("study_block.skipped", {"block_id": block_id, "reason": reason})
-        return result
 
     # ─────────────────────────────────────────────────────────────────────
     # TIMELINE & PLANNER DECISIONS
@@ -249,8 +254,153 @@ class StateDB:
 
     async def save_planner_decision(self, decision: dict[str, Any]) -> None:
         db = self._get_db()
-        decision["timestamp"] = datetime.now(timezone.utc).isoformat()
-        await db.planner_decisions.insert_one(decision)
+        row = dict(decision)
+        row.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        decision_id = row.get("decision_id")
+        if decision_id:
+            await db.planner_decisions.update_one(
+                {"decision_id": decision_id},
+                {
+                    "$set": row,
+                    "$setOnInsert": {"created_at": row["timestamp"]},
+                },
+                upsert=True,
+            )
+        else:
+            await db.planner_decisions.insert_one(row)
+        await self.record_timeline_event("planner.decision", row)
+
+    async def get_planner_decision(self, decision_id: str) -> dict[str, Any] | None:
+        db = self._get_db()
+        return await db.planner_decisions.find_one({"decision_id": decision_id}, {"_id": 0})
+
+    async def get_latest_planner_decision_for_date(self, target_date: str) -> dict[str, Any] | None:
+        db = self._get_db()
+        return await db.planner_decisions.find_one(
+            {"date": target_date},
+            {"_id": 0},
+            sort=[("timestamp", -1)],
+        )
+
+    async def append_planner_actual(self, target_date: str, actual: dict[str, Any]) -> dict[str, Any] | None:
+        db = self._get_db()
+        actual_row = dict(actual)
+        actual_row.setdefault("date", target_date)
+        actual_row.setdefault("computed_at", datetime.now(timezone.utc).isoformat())
+
+        decision_id = actual_row.get("decision_id")
+        decision = None
+        if decision_id:
+            decision = await db.planner_decisions.find_one({"decision_id": decision_id}, {"_id": 0})
+        if not decision:
+            decision = await self.get_latest_planner_decision_for_date(target_date)
+            decision_id = decision.get("decision_id") if decision else None
+            if decision_id:
+                actual_row["decision_id"] = decision_id
+        if not decision:
+            return None
+
+        error = self._compute_prediction_error(decision.get("prediction") or {}, actual_row)
+        update = {
+            "$set": {
+                "actual": actual_row,
+                "prediction_error": error,
+                "actual_updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            "$push": {"actual_history": actual_row},
+        }
+        await db.planner_decisions.update_one({"decision_id": decision_id}, update)
+        event_payload = {
+            "decision_id": decision_id,
+            "date": target_date,
+            "actual": actual_row,
+            "prediction_error": error,
+        }
+        await self.record_timeline_event("planner.actual_appended", event_payload)
+        return event_payload
+
+    async def save_daily_snapshot(self, snapshot: dict[str, Any]) -> None:
+        db = self._get_db()
+        row = dict(snapshot)
+        row.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        await db.snapshots.update_one(
+            {"date": row.get("date")},
+            {"$set": row},
+            upsert=True,
+        )
+        await self.record_timeline_event("snapshot.daily", row)
+
+    @staticmethod
+    def _compute_prediction_error(prediction: dict[str, Any], actual: dict[str, Any]) -> dict[str, Any]:
+        pairs = {
+            "cy": ("expected_cy", "actual_cy"),
+            "duration": ("expected_duration", "actual_duration"),
+            "completion": ("expected_completion", "actual_completion"),
+            "fatigue": ("expected_fatigue", "actual_fatigue"),
+        }
+        errors = {}
+        for label, (pred_key, actual_key) in pairs.items():
+            predicted = prediction.get(pred_key)
+            observed = actual.get(actual_key)
+            if predicted is None or observed is None:
+                continue
+            try:
+                errors[label] = float(predicted) - float(observed)
+            except (TypeError, ValueError):
+                continue
+        return errors
+
+    async def save_recovery_event(self, event_data: dict[str, Any]) -> None:
+        db = self._get_db()
+        row = dict(event_data)
+        row.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        await db.recovery_history.insert_one(row)
+        await self.record_timeline_event("recovery.event", row)
+
+    async def save_faculty_event(self, event_data: dict[str, Any]) -> None:
+        db = self._get_db()
+        row = dict(event_data)
+        row.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        await db.faculty_history.insert_one(row)
+        await self.record_timeline_event("faculty.event", row)
+
+    async def save_prediction(self, prediction_data: dict[str, Any]) -> None:
+        db = self._get_db()
+        row = dict(prediction_data)
+        row.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        await db.prediction_history.insert_one(row)
+        await self.record_timeline_event("prediction.event", row)
+
+    async def get_learning_confidence_level(self) -> int:
+        db = self._get_db()
+        day_count = await db.daily_summary.count_documents({"date": {"$exists": True}})
+        learning_events = await db.learning_events.count_documents({})
+        completed_blocks = await db.completed_blocks.count_documents({})
+        evidence_count = learning_events + completed_blocks
+        if day_count >= 365 or evidence_count >= 900:
+            level = 4
+        elif day_count >= 180 or evidence_count >= 450:
+            level = 3
+        elif day_count >= 30 or evidence_count >= 90:
+            level = 2
+        elif day_count >= 7 or evidence_count >= 20:
+            level = 1
+        else:
+            level = 0
+        await db.learning_model.update_one(
+            {"key": "confidence_level"},
+            {
+                "$set": {
+                    "key": "confidence_level",
+                    "level": level,
+                    "day_count": day_count,
+                    "evidence_count": evidence_count,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+            upsert=True,
+        )
+        return level
 
     # ─────────────────────────────────────────────────────────────────────
     # DAILY SUMMARY
@@ -541,3 +691,75 @@ class StateDB:
         db = self._get_db()
         cursor = db.recommendation_history.find({}, {"_id": 0}).sort("timestamp", -1).limit(limit)
         return await cursor.to_list(length=limit)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # STUDENT PROFILE (ONBOARDING)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def save_student_profile(self, profile: dict[str, Any]) -> None:
+        """Save or update the student profile (singleton document)."""
+        db = self._get_db()
+        profile["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.student_profile.update_one(
+            {"_id": "main"},
+            {"$set": profile},
+            upsert=True
+        )
+
+    async def get_student_profile(self) -> dict[str, Any] | None:
+        """Get the student profile, or None if onboarding hasn't happened."""
+        db = self._get_db()
+        doc = await db.student_profile.find_one({"_id": "main"})
+        if doc:
+            doc.pop("_id", None)
+        return doc
+
+    # ─────────────────────────────────────────────────────────────────────
+    # PERSONAL MEMORY
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def save_memory(self, memory_data: dict[str, Any]) -> None:
+        """Save a personal memory entry."""
+        db = self._get_db()
+        memory_data["created_at"] = datetime.now(timezone.utc).isoformat()
+        await db.memories.insert_one(memory_data)
+
+    async def search_memories(self, query: str) -> list[dict[str, Any]]:
+        """Search personal memories by text, tags, and entities."""
+        db = self._get_db()
+        cursor = db.memories.find(
+            {"$or": [
+                {"raw_text": {"$regex": query, "$options": "i"}},
+                {"tags": {"$regex": query, "$options": "i"}},
+                {"entities": {"$regex": query, "$options": "i"}},
+            ]},
+            {"_id": 0}
+        )
+        return await cursor.to_list(length=20)
+
+    async def get_all_memories(self) -> list[dict[str, Any]]:
+        """Get all personal memories, newest first."""
+        db = self._get_db()
+        cursor = db.memories.find({}, {"_id": 0}).sort("created_at", -1)
+        return await cursor.to_list(length=100)
+
+    async def get_study_rules(self) -> list[dict[str, Any]]:
+        """Get memories tagged as study rules (e.g. '2 hours PYQs daily')."""
+        db = self._get_db()
+        cursor = db.memories.find(
+            {"resolved_type": "study_rule"},
+            {"_id": 0}
+        ).sort("created_at", -1)
+        return await cursor.to_list(length=50)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # FEEDBACK (SEPARATE DATABASE)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def save_feedback(self, feedback_data: dict[str, Any]) -> None:
+        """Save user feedback to a separate feedback database in the same cluster."""
+        if self._client is None:
+            self._get_db()
+        feedback_db = self._client["sentinel_feedback"]
+        feedback_data["created_at"] = datetime.now(timezone.utc).isoformat()
+        await feedback_db.feedback.insert_one(feedback_data)

@@ -87,6 +87,33 @@ YOUR JOB:
 5. At L0, stay protocol-driven. At L1-L2, make only evidence-backed small adaptations. At L3-L4, prediction may influence scheduling.
 6. End with one line: the gap between current pace and {target_iit} {target_branch} cutoff.
 
+Return JSON only. No markdown fences.
+Required schema:
+{{{{
+  "prediction": {{{{
+    "expected_cy": <number>,
+    "expected_duration": <minutes>,
+    "expected_completion": <0.0-1.0>,
+    "expected_fatigue": <0.0-1.0 or null>
+  }}}},
+  "blocks": [
+    {{{{
+      "block_label": "EB-1",
+      "subject": "Physics|Chem|Maths",
+      "chapter": "<specific chapter>",
+      "exercise_type": "<specific exercise type>",
+      "question_count": <int>,
+      "target_time": <minutes>,
+      "expected_cy": <int>,
+      "expected_questions": <int>,
+      "estimated_minutes": <minutes>,
+      "questions": "<range or count>",
+      "block_type": "homework|revision|theory|test|faculty_session",
+      "difficulty": "Easy|Medium|Hard"
+    }}}}
+  ]
+}}}}
+
 Be specific. No vague "study hard" advice. Block names, subjects, question counts, CY targets.
 """.format_map({
     "daily_cy_target": DAILY_CY_TARGET,

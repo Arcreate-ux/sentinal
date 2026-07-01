@@ -21,17 +21,23 @@ class StudyBlockEngine:
     @staticmethod
     def normalize_plan(plan: ExecutionPlan, target_date: str | None = None) -> ExecutionPlan:
         date_str = target_date or plan.date or datetime.now().strftime("%Y-%m-%d")
+        decision_id = getattr(plan, "decision_id", "")
         blocks = [
             StudyBlockEngine.normalize_block(block, date_str, idx + 1)
             for idx, block in enumerate(plan.blocks)
         ]
+        for block in blocks:
+            if decision_id and not block.decision_id:
+                block.decision_id = decision_id
         return ExecutionPlan(
             schema_version=plan.schema_version,
+            decision_id=decision_id,
             date=date_str,
             day_type=plan.day_type,
             blocks=blocks,
             total_expected_cy=sum(block.expected_cy for block in blocks),
             total_expected_time=sum(block.estimated_minutes or block.target_time for block in blocks),
+            prediction=getattr(plan, "prediction", None) or {},
             is_fallback=plan.is_fallback,
         )
 
@@ -51,6 +57,7 @@ class StudyBlockEngine:
 
         return ExecutionBlock(
             schema_version=raw.get("schema_version", "1.0"),
+            decision_id=str(raw.get("decision_id") or ""),
             block_id=block_id,
             date=str(raw.get("date") or target_date),
             label=label,

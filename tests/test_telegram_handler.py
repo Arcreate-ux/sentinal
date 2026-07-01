@@ -88,7 +88,14 @@ async def test_send_morning_briefing_uses_existing_plan():
     bot.state.get_state.side_effect = lambda key, default=None: {
         "plan_date": today,
         "current_plan": plan.model_dump_json(),
+        "homework_pending": "[]",
     }.get(key, default)
+
+    # Mock additional data sources used by the rich briefing
+    bot.state.get_student_profile = AsyncMock(return_value={"name": "Test", "jee_main_date": "2028-01-20", "jee_advanced_date": "2028-06-01"})
+    bot.state.get_daily_summary = AsyncMock(return_value=None)
+    bot.state.get_streak = AsyncMock(return_value=None)
+    bot.state.get_unresolved_concepts = AsyncMock(return_value=[])
 
     with pytest.MonkeyPatch.context() as m:
         mock_send = AsyncMock()
@@ -97,5 +104,5 @@ async def test_send_morning_briefing_uses_existing_plan():
         await bot.send_morning_briefing()
 
         mock_send.assert_awaited_once()
-        assert "DAY PLAN" in mock_send.call_args.args[0]
+        assert "BATTLE PLAN" in mock_send.call_args.args[0]
         assert "Physics JMYL" in mock_send.call_args.args[0]

@@ -126,6 +126,7 @@ class KnowledgeEngine:
 
             # Emit KnowledgeExtracted Event
             event_bus = getattr(self, "event_bus", None)
+            bus_ok = False
             if event_bus:
                 from sentinel.bot.events import KnowledgeExtracted
                 import uuid
@@ -138,7 +139,20 @@ class KnowledgeEngine:
                         "archived_questions": archived_questions
                     }
                 )
-                await event_bus.publish(event)
+                try:
+                    await event_bus.publish(event)
+                    bus_ok = True
+                except Exception as bus_err:
+                    logger.warning("Event bus publish failed, using direct save: %s", bus_err)
+
+            # Direct save fallback — concepts NEVER disappear
+            if not bus_ok:
+                try:
+                    await self.state.save_learning_event(learning_event)
+                    for asset in concept_assets:
+                        await self.state.upsert_concept_asset(asset)
+                except Exception as save_err:
+                    logger.error("Direct save also failed: %s", save_err)
             
             return {"learning_event": learning_event, "concept_assets": concept_assets, "archived_questions": archived_questions}
             
