@@ -137,8 +137,8 @@ push_branches() {
   echo "Pushing branch '$CURRENT_BRANCH' to GitHub..."
   git push origin "$CURRENT_BRANCH"
 
-  echo "Pushing branch '$CURRENT_BRANCH' to Hugging Face..."
-  git push hf "$CURRENT_BRANCH"
+  echo "Pushing branch '$CURRENT_BRANCH' to Hugging Face (force)..."
+  git push -f hf "$CURRENT_BRANCH"
 }
 
 sync_huggingface_secrets() {
