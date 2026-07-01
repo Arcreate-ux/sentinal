@@ -121,9 +121,15 @@ ensure_huggingface_space() {
       --exist-ok
   fi
 
+  if [[ -z "$HF_TOKEN" ]] && [[ -f ~/.cache/huggingface/token ]]; then
+    HF_TOKEN="$(cat ~/.cache/huggingface/token)"
+  fi
+
   if ! git remote get-url hf >/dev/null 2>&1; then
-    git remote add hf "https://huggingface.co/spaces/$HF_SPACE_ID"
+    git remote add hf "https://$hf_username:$HF_TOKEN@huggingface.co/spaces/$HF_SPACE_ID"
     echo "Added Hugging Face git remote: https://huggingface.co/spaces/$HF_SPACE_ID"
+  else
+    git remote set-url hf "https://$hf_username:$HF_TOKEN@huggingface.co/spaces/$HF_SPACE_ID"
   fi
 }
 
