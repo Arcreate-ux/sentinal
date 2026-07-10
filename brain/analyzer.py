@@ -358,31 +358,153 @@ class PerformanceAnalyzer:
 
     @staticmethod
     def _compute_trend(values: list[int | float]) -> str:
-        """Simple trend detection: rising, declining, or stable.
-        Uses linear slope over the value series.
-        """
+        """Simple trend detection: rising, declining, or stable."""
         if len(values) < 2:
             return "stable"
-            
         n = len(values)
         x_mean = (n - 1) / 2
         y_mean = sum(values) / n
-        
         numerator = sum((i - x_mean) * (v - y_mean) for i, v in enumerate(values))
         denominator = sum((i - x_mean) ** 2 for i in range(n))
-        
         if denominator == 0:
             return "stable"
-            
         slope = numerator / denominator
-        
-        # Normalise slope relative to mean
         if y_mean == 0:
             return "stable"
-            
         relative_slope = slope / y_mean
         if relative_slope > 0.05:
             return "rising"
         elif relative_slope < -0.05:
             return "declining"
         return "stable"
+
+    # ── Deep Historical Weak-Points Analysis ────────────────────────────────
+
+    async def get_weak_points_deep(self, months: int = 6) -> dict:
+        """
+        Pull everything from the last N months and find REAL weakness patterns.
+        This is what powers "tell me my weakest points" after months of use.
+
+        Returns a structured dict with:
+        - weakest_chapters: chapters with most recurring errors
+        - weakest_exercise_types: exercise types with lowest accuracy
+        - recurring_concepts: concepts that failed more than once
+        - subject_accuracy: per-subject accuracy over the period
+        - improvement_areas: actionable priorities
+        """
+        from datetime import date
+        end_date = date.today().isoformat()
+        start_date = (date.today() - timedelta(days=months * 30)).isoformat()
+
+        # Pull from completed_blocks
+        blocks = []
+        try:
+            blocks = await self.state.get_blocks_with_errors_range(start_date, end_date)
+        except Exception as e:
+            logger.warning("Could not fetch blocks range: %s", e)
+
+        # Pull from chapter_logs (all accumulated errors/notes)
+        chapter_logs = []
+        try:
+            chapter_logs = await self.state.get_all_chapter_logs()
+        except Exception as e:
+            logger.warning("Could not fetch chapter logs: %s", e)
+
+        # Pull from concept_assets (recurring doubts)
+        unresolved = []
+        try:
+            unresolved = await self.state.get_unresolved_concepts() or []
+        except Exception as e:
+            logger.warning("Could not fetch unresolved concepts: %s", e)
+
+        # ── Compute per-subject accuracy ──
+        subject_stats: dict[str, dict] = {}
+        for b in blocks:
+            subj = b.get("subject", "Unknown")
+            if subj not in subject_stats:
+                subject_stats[subj] = {"attempted": 0, "correct": 0, "weak_blocks": 0, "total_blocks": 0}
+            subject_stats[subj]["attempted"] += b.get("attempted") or 0
+            subject_stats[subj]["correct"] += b.get("correct") or 0
+            subject_stats[subj]["total_blocks"] += 1
+            if b.get("is_weak"):
+                subject_stats[subj]["weak_blocks"] += 1
+
+        subject_accuracy = {}
+        for subj, s in subject_stats.items():
+            a = s["attempted"]
+            subject_accuracy[subj] = {
+                "accuracy": round(s["correct"] / a, 2) if a > 0 else 0,
+                "weak_block_rate": round(s["weak_blocks"] / s["total_blocks"], 2) if s["total_blocks"] > 0 else 0,
+                "total_blocks": s["total_blocks"],
+            }
+
+        # ── Weakest exercise types ──
+        ex_stats: dict[str, dict] = {}
+        for b in blocks:
+            ex = b.get("exercise_type", "Unknown")
+            subj = b.get("subject", "?")
+            key = f"{subj} {ex}"
+            if key not in ex_stats:
+                ex_stats[key] = {"attempted": 0, "correct": 0, "count": 0}
+            ex_stats[key]["attempted"] += b.get("attempted") or 0
+            ex_stats[key]["correct"] += b.get("correct") or 0
+            ex_stats[key]["count"] += 1
+
+        weakest_ex = sorted(
+            [
+                {
+                    "exercise": k,
+                    "accuracy": round(v["correct"] / v["attempted"], 2) if v["attempted"] > 0 else 0,
+                    "blocks_done": v["count"],
+                }
+                for k, v in ex_stats.items()
+                if v["attempted"] > 0
+            ],
+            key=lambda x: x["accuracy"],
+        )[:5]
+
+        # ── Chapters with most errors (from chapter_logs) ──
+        chapter_error_counts = []
+        for cl in chapter_logs:
+            entries = cl.get("block_entries", [])
+            all_errors = []
+            recurring = []
+            for e in entries:
+                all_errors.extend(e.get("errors", []))
+                recurring.extend(e.get("recurring_mistakes", []))
+            if all_errors:
+                chapter_error_counts.append({
+                    "chapter": cl.get("chapter", "?"),
+                    "subject": cl.get("subject", "?"),
+                    "error_count": len(all_errors),
+                    "recurring_count": len(recurring),
+                    "blocks_done": cl.get("block_count", 0),
+                })
+
+        weakest_chapters = sorted(
+            chapter_error_counts,
+            key=lambda x: x["recurring_count"] * 2 + x["error_count"],
+            reverse=True,
+        )[:5]
+
+        # ── Recurring unresolved concepts ──
+        recurring_concepts = [
+            {
+                "concept": c.get("concept_name"),
+                "subject": c.get("subject"),
+                "chapter": c.get("chapter"),
+            }
+            for c in unresolved[:10]
+        ]
+
+        return {
+            "period_months": months,
+            "start_date": start_date,
+            "end_date": end_date,
+            "total_blocks_analyzed": len(blocks),
+            "subject_accuracy": subject_accuracy,
+            "weakest_exercise_types": weakest_ex,
+            "weakest_chapters": weakest_chapters,
+            "recurring_unresolved_concepts": recurring_concepts,
+        }
+

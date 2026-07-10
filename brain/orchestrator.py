@@ -349,6 +349,43 @@ class Orchestrator:
         )
 
     async def _handle_analyze_history(self, text: str, reply) -> None:
+        text_lower = text.lower()
+        is_weak_points_query = any(
+            kw in text_lower for kw in [
+                "weak", "weakness", "struggle", "bad at", "worst", "improve",
+                "problem area", "where am i failing", "tell me my", "diagnose"
+            ]
+        )
+
+        if is_weak_points_query:
+            # Pull deep historical data — real numbers, not vibes
+            await reply("📊 Pulling your full history... this is the real data.")
+            try:
+                data = await self.analyzer.get_weak_points_deep(months=6)
+                from sentinel.brain.prompts import SYSTEM_PROMPT_COMPETITIVE_RIVAL
+                prompt = (
+                    f"The student asked: '{text}'\n\n"
+                    f"Here is their REAL performance data from the last {data['period_months']} months "
+                    f"({data['total_blocks_analyzed']} blocks analyzed):\n\n"
+                    f"SUBJECT ACCURACY:\n{json.dumps(data['subject_accuracy'], indent=2)}\n\n"
+                    f"WEAKEST EXERCISE TYPES (lowest accuracy):\n{json.dumps(data['weakest_exercise_types'], indent=2)}\n\n"
+                    f"CHAPTERS WITH MOST ERRORS:\n{json.dumps(data['weakest_chapters'], indent=2)}\n\n"
+                    f"RECURRING UNRESOLVED CONCEPTS:\n{json.dumps(data['recurring_unresolved_concepts'], indent=2)}\n\n"
+                    f"Give a brutal, specific diagnosis. Name the exact chapters, exercise types, and concepts. "
+                    f"Then give 3 concrete actions for the next 7 days. Use the data. No generic advice."
+                )
+                res = await self.analyzer.ai.call(
+                    "general_chat", prompt,
+                    system_prompt=SYSTEM_PROMPT_COMPETITIVE_RIVAL,
+                    max_tokens=600
+                )
+                await reply(res)
+            except Exception as e:
+                logger.error("Weak points analysis failed: %s", e)
+                await reply("⚠️ Failed to run deep analysis. Try again.")
+            return
+
+        # Default: 7-day trend
         trends = await self.analyzer.detect_trends(days=7)
         from sentinel.brain.prompts import ANALYZE_HISTORY_PROMPT
         prompt = ANALYZE_HISTORY_PROMPT.format(text=text, trends=json.dumps(trends, indent=2))
@@ -358,19 +395,59 @@ class Orchestrator:
         except Exception:
             await reply("⚠️ Failed to analyze history.")
 
+
+
+
     async def _handle_general_message(self, text: str, intent_data, reply) -> None:
-        """Unified AI handler. Every non-command message goes through here with full context."""
+        """Unified AI handler. First checks for physics/math doubt — bans it. Then full context response."""
         if not self.ai:
-            await reply("\u26a0\ufe0f AI engine not available.")
+            await reply("⚠️ AI engine not available.")
             return
 
         try:
-            # 1. Load full context: profile + memories + plan + doubts + rules
+            # ── STEP 0: Doubt Detection Gate ──────────────────────────────
+            # If the student is trying to get SENTINEL to solve a concept/problem,
+            # refuse immediately and log the doubt for faculty.
+            from sentinel.brain.prompts import DOUBT_DETECTION_PROMPT
+            try:
+                doubt_check = await self.ai.call(
+                    task_type="parser",
+                    prompt=DOUBT_DETECTION_PROMPT.format(text=text),
+                    system_prompt="Reply with exactly one word: YES or NO",
+                    max_tokens=5,
+                    temperature=0.0,
+                )
+                is_doubt = doubt_check.strip().upper().startswith("YES")
+            except Exception:
+                is_doubt = False  # Default to allowing if check fails
+
+            if is_doubt:
+                # Log the doubt to MongoDB as a faculty item
+                try:
+                    await self.state.upsert_concept_asset({
+                        "concept_name": text[:120],
+                        "subject": "Unknown",
+                        "chapter": "Unknown",
+                        "resolved": False,
+                        "failure_type": "faculty_doubt",
+                        "revisions": [],
+                        "current_understanding": "Needs faculty clarification",
+                        "linked_questions": [],
+                    })
+                except Exception:
+                    pass
+                await reply(
+                    "❌ Not my job. Your faculty solves doubts.\n\n"
+                    "📋 Logged to /faculty list. Ask your teacher next session.\n\n"
+                    "Go back to work."
+                )
+                return
+
+            # ── STEP 1: Load full context ──────────────────────────────────
             memory_context = {}
             if self.personal_memory:
                 memory_context = await self.personal_memory.get_context_for_ai(text)
 
-            # Current plan
             raw_plan = await self.state.get_state("current_plan")
             plan_summary = "No plan generated yet."
             if raw_plan:
@@ -385,44 +462,28 @@ class Orchestrator:
                 except Exception:
                     plan_summary = "Plan exists but couldn't be parsed."
 
-            # Yesterday's summary
             from datetime import timedelta
             yesterday = (datetime.now(_IST) - timedelta(days=1)).strftime("%Y-%m-%d")
             yesterday_summary = await self.state.get_daily_summary(yesterday)
 
-            # Unresolved doubts (top 5)
             unresolved = await self.state.get_unresolved_concepts()
             doubts_summary = ", ".join(
                 c.get("concept_name", "?") for c in (unresolved or [])[:5]
             ) if unresolved else "None"
 
-            # Build the context string
             profile = memory_context.get("student_profile", {})
-            
-            # Extract detailed profile info
             name = profile.get("name", "Student") if profile else "Student"
-            target_exam = profile.get("target_exam", "JEE")
-            start_date = profile.get("start_date", "Unknown")
-            coaching_days = profile.get("coaching_days", "Unknown")
             faculty = profile.get("faculty", {})
             current_chapters = profile.get("current_chapters", {})
-            backlogs = profile.get("backlogs", "0")
-
             rules = memory_context.get("study_rules", [])
             relevant_mems = memory_context.get("relevant_memories", [])
-            
             now_str = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S %Z")
 
             context_str = (
                 f"CURRENT DATE/TIME: {now_str}\n"
-                f"STUDENT PROFILE:\n"
-                f" - Name: {name}\n"
-                f" - Target: {target_exam}\n"
-                f" - Prep Started: {start_date}\n"
-                f" - Coaching Days: {coaching_days}\n"
-                f" - Faculty: {json.dumps(faculty)}\n"
-                f" - Current Chapters: {json.dumps(current_chapters)}\n"
-                f" - Backlogs: {backlogs}\n\n"
+                f"STUDENT: {name}\n"
+                f"FACULTY: {json.dumps(faculty)}\n"
+                f"CURRENT CHAPTERS: {json.dumps(current_chapters)}\n\n"
                 f"TODAY'S PLAN:\n{plan_summary}\n\n"
                 f"YESTERDAY CY: {yesterday_summary.get('total_cy', 'N/A') if yesterday_summary else 'N/A'}\n\n"
                 f"UNRESOLVED DOUBTS: {doubts_summary}\n\n"
@@ -430,26 +491,18 @@ class Orchestrator:
                 f"RELEVANT MEMORIES: {json.dumps(relevant_mems) if relevant_mems else 'None'}\n"
             )
 
-            system_prompt = (
-                "You are SENTINEL, an AI study coach for a JEE student. "
-                "You have access to the student's full study data below. "
-                "Answer concisely and actionably using ONLY the provided context. "
-                "If the student tells you a new rule or preference (e.g. 'from today do 2 hours PYQs'), "
-                "acknowledge it and include in your response: SAVE_MEMORY: <the rule to save>. "
-                "Keep responses under 300 words. Be direct, no fluff."
-            )
-
+            from sentinel.brain.prompts import SYSTEM_PROMPT_COMPETITIVE_RIVAL
             prompt = f"CONTEXT:\n{context_str}\nSTUDENT MESSAGE: {text}"
 
             response = await self.ai.call(
                 task_type="general_chat",
                 prompt=prompt,
-                system_prompt=system_prompt,
+                system_prompt=SYSTEM_PROMPT_COMPETITIVE_RIVAL,
                 max_tokens=400,
                 temperature=0.5,
             )
 
-            # 2. Check if AI wants to save a memory
+            # Check if AI wants to save a memory rule
             if self.personal_memory and "SAVE_MEMORY:" in response:
                 parts = response.split("SAVE_MEMORY:", 1)
                 response_text = parts[0].strip()
@@ -457,17 +510,17 @@ class Orchestrator:
                 if memory_text:
                     await self.personal_memory.save(memory_text)
                     response_text += "\n\n🧠 Saved to memory."
-                
-                # Sanitize any bad surrogates returned by the AI provider (e.g. \u202f or half-emojis)
-                response_text = response_text.encode('utf-16', 'surrogatepass').decode('utf-16')
+                response_text = response_text.encode("utf-16", "surrogatepass").decode("utf-16")
                 await reply(response_text)
             else:
-                response = response.strip().encode('utf-16', 'surrogatepass').decode('utf-16')
+                response = response.strip().encode("utf-16", "surrogatepass").decode("utf-16")
                 await reply(response)
 
         except Exception as e:
             logger.error("General message handler failed: %s", e, exc_info=True)
-            await reply("\u26a0\ufe0f Couldn't process that right now. Try a command instead.")
+            await reply("⚠️ Couldn't process that right now. Try a command instead.")
+
+
 
     async def _log_block_result(self, report, reply, context_obj) -> None:
         from sentinel.notion_client.formulas import cognitive_yield

@@ -8,9 +8,7 @@ huggingface-hub==0.33.1
 python-dateutil==2.9.0
 pytz==2025.2
 pymongo>=4.11.0
-ollamafreeapi==0.1.2
 pydantic>=2.0.0
+anyio>=4.0.0
 pytest>=7.0.0
-g4f[all]
-curl_cffi
-notion-client
+pytest-asyncio>=0.23.0

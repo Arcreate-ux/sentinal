@@ -71,6 +71,7 @@ class StateDB:
             await db.archived_questions.create_index("timestamp")
             await db.concept_assets.create_index("concept_name", unique=True)
             await db.skill_assets.create_index([("skill_name", 1), ("subject", 1)], unique=True)
+            await db.chapter_logs.create_index([("chapter", 1), ("subject", 1)], unique=True)
             logger.info(f"MongoDB initialized at {self.uri} (DB: {self.db_name})")
         except ConnectionFailure as e:
             logger.error(f"Failed to connect to MongoDB: {e}")
@@ -763,3 +764,45 @@ class StateDB:
         feedback_db = self._client["sentinel_feedback"]
         feedback_data["created_at"] = datetime.now(timezone.utc).isoformat()
         await feedback_db.feedback.insert_one(feedback_data)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # CHAPTER LOGS — Powers /chapter and weak-points analysis
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def get_all_chapter_logs(self, subject: str | None = None) -> list[dict[str, Any]]:
+        """
+        Get all chapter logs. Used by weak-points analysis to find which chapters
+        have the most recurring errors across the student's entire history.
+        """
+        db = self._get_db()
+        query = {}
+        if subject:
+            query["subject"] = subject
+        cursor = db.chapter_logs.find(query, {"_id": 0}).sort("last_updated", -1)
+        return await cursor.to_list(length=None)
+
+    async def get_blocks_with_errors_range(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        """
+        Get completed blocks from a date range that have errors or low accuracy.
+        Used for identifying patterns across months of data.
+        accuracy = correct/attempted < 0.65 is flagged as a weak block.
+        """
+        db = self._get_db()
+        cursor = db.completed_blocks.find(
+            {
+                "date": {"$gte": start_date, "$lte": end_date},
+                "status": "COMPLETED",
+            },
+            {"_id": 0, "subject": 1, "chapter": 1, "exercise_type": 1,
+             "attempted": 1, "correct": 1, "actual_cy": 1, "date": 1,
+             "errors": 1, "key_points": 1, "short_note": 1},
+        ).sort("date", 1)
+        blocks = await cursor.to_list(length=None)
+        # Flag weak blocks (accuracy < 65%)
+        for b in blocks:
+            a = b.get("attempted") or 0
+            c = b.get("correct") or 0
+            b["accuracy"] = round(c / a, 2) if a > 0 else 0.0
+            b["is_weak"] = b["accuracy"] < 0.65
+        return blocks
+

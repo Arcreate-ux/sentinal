@@ -785,6 +785,21 @@ async def cmd_faculty(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lines.append("Show this on your phone when you walk into class. 📱")
     await _reply(update, "\n".join(lines))
 
+# ── /chapter ────────────────────────────────────────────────────────────────
+async def cmd_chapter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Master chapter summary."""
+    parts = update.message.text.split(None, 1)
+    if len(parts) < 2:
+        await _reply(update, "Usage: /chapter <chapter_name>")
+        return
+    chapter_name = parts[1].strip()
+    reflection_engine = context.bot_data.get("reflection_engine")
+    if not reflection_engine:
+        await _reply(update, "⚠️ Reflection engine not available.")
+        return
+    summary = await reflection_engine.generate_chapter_summary(chapter_name)
+    await _reply(update, summary)
+
 # ── /remember ───────────────────────────────────────────────────────────────
 async def cmd_remember(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Save something to personal memory."""
@@ -871,6 +886,7 @@ COMMANDS = [
     cmd_scores,
     cmd_roast,
     cmd_done,
+    cmd_chapter,
     cmd_doubts,
     cmd_jee,
     cmd_backlog,

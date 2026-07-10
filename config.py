@@ -200,10 +200,10 @@ AI_PROVIDERS = {
     },
 }
 
-# Fallback chain order
-FALLBACK_CHAIN = ["gpt_5_5", "cohere", "cf_glm_5_2", "glm_5_2", "g4f_pro", "gemini", "gpt_oss_120b", "groq_oss_120b", "cf_gpt_oss_120b", "cf_nemotron_120b", "g4f", "groq", "cerebras", "ollama", "openrouter", "huggingface", "uncloseai", "cloudflare"]
-FAST_PROVIDERS = ["groq_oss_120b", "cerebras", "cf_gpt_oss_120b", "cf_nemotron_120b", "gpt_oss_120b", "g4f", "groq", "ollama"]
-THINK_PROVIDERS = ["gpt_5_5", "cf_glm_5_2", "glm_5_2", "g4f_pro", "gemini"]
+# Fallback chain order — G4F providers REMOVED (unreliable, break every few weeks)
+FALLBACK_CHAIN = ["gemini", "groq", "cerebras", "cohere", "openrouter", "huggingface", "cloudflare"]
+FAST_PROVIDERS = ["groq", "cerebras", "openrouter"]
+THINK_PROVIDERS = ["gemini", "cohere"]
 
 # Task Profiles for dynamic routing and execution strategy
 DEFAULT_TASK_PROFILES = {
@@ -278,7 +278,7 @@ DEFAULT_TASK_PROFILES = {
 # ─────────────────────────────────────────────────────────────────────────────
 # STUDY SYSTEM CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-DAILY_CY_TARGET = 240
+DAILY_CY_TARGET = 320  # Target raised — make it hurt
 HARD_STOP_HOUR = 1  # 01:00 AM
 MORNING_BRIEFING_HOUR = 8  # 08:00 AM
 TIMEZONE = "Asia/Kolkata"
