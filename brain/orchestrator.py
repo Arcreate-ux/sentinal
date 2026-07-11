@@ -405,21 +405,43 @@ class Orchestrator:
             return
 
         try:
-            # ── STEP 0: Doubt Detection Gate ──────────────────────────────
+            # ── STEP 0: Doubt Detection Gate with Caching & Filtering ──────
             # If the student is trying to get SENTINEL to solve a concept/problem,
             # refuse immediately and log the doubt for faculty.
-            from sentinel.brain.prompts import DOUBT_DETECTION_PROMPT
-            try:
-                doubt_check = await self.ai.call(
-                    task_type="parser",
-                    prompt=DOUBT_DETECTION_PROMPT.format(text=text),
-                    system_prompt="Reply with exactly one word: YES or NO",
-                    max_tokens=5,
-                    temperature=0.0,
-                )
-                is_doubt = doubt_check.strip().upper().startswith("YES")
-            except Exception:
-                is_doubt = False  # Default to allowing if check fails
+            import re
+            import hashlib
+            text_clean = text.lower().strip()
+            common_chat = {"hi", "hello", "hey", "status", "roast", "scores", "skip", "sick", "help", "remember", "done", "plan", "yes", "no", "thanks", "ok"}
+            is_doubt = False
+
+            has_doubt_keywords = any(kw in text_clean for kw in ["solve", "how to", "why does", "explain", "concept", "formula", "physics", "chem", "math", "question", "doubt", "derive", "what is"])
+            has_math_symbols = any(sym in text_clean for sym in ["+", "=", "\\", "?", "^", "*", "/", "<", ">"])
+
+            if text_clean in common_chat:
+                is_doubt = False
+            elif not (has_doubt_keywords or has_math_symbols):
+                is_doubt = False
+            else:
+                text_hash = hashlib.md5(text_clean.encode("utf-8")).hexdigest()
+                cache_key = f"doubt_check:{text_hash}"
+                try:
+                    cached_val = await self.state.get_state(cache_key)
+                    if cached_val is not None:
+                        is_doubt = cached_val == "true"
+                    else:
+                        from sentinel.brain.prompts import DOUBT_DETECTION_PROMPT
+                        doubt_check = await self.ai.call(
+                            task_type="parser",
+                            prompt=DOUBT_DETECTION_PROMPT.format(text=text),
+                            system_prompt="Reply with exactly one word: YES or NO",
+                            max_tokens=5,
+                            temperature=0.0,
+                        )
+                        is_doubt = doubt_check.strip().upper().startswith("YES")
+                        await self.state.set_state(cache_key, "true" if is_doubt else "false")
+                except Exception as e:
+                    logger.warning(f"Doubt check/cache failed: {e}")
+                    is_doubt = False  # Fallback to general message on error
 
             if is_doubt:
                 # Log the doubt to MongoDB as a faculty item

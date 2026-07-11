@@ -141,9 +141,13 @@ class AIEngine:
         await self._http.aclose()
         for client in self._openai_clients.values():
             if hasattr(client, "close"):
-                client.close()
+                res = client.close()
+                if asyncio.iscoroutine(res):
+                    await res
             elif hasattr(client, "aclose"):
-                await client.aclose()
+                res = client.aclose()
+                if asyncio.iscoroutine(res):
+                    await res
         logger.info("AIEngine shut down.")
 
     # ── public API ────────────────────────────────────────────────────────

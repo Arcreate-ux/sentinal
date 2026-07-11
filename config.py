@@ -278,7 +278,7 @@ DEFAULT_TASK_PROFILES = {
 # ─────────────────────────────────────────────────────────────────────────────
 # STUDY SYSTEM CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-DAILY_CY_TARGET = 320  # Target raised — make it hurt
+DAILY_CY_TARGET = 240  # Target reset for initial calibration — raise it slowly as streaks build.
 HARD_STOP_HOUR = 1  # 01:00 AM
 MORNING_BRIEFING_HOUR = 8  # 08:00 AM
 TIMEZONE = "Asia/Kolkata"
@@ -320,7 +320,7 @@ BLOCK_TYPES = [
 # ─────────────────────────────────────────────────────────────────────────────
 # TIMING CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-BLOCK_TIMEOUT_MINUTES = 15       # Minutes after expected end before timeout ping
+BLOCK_TIMEOUT_MINUTES = 10       # Minutes after expected end before single timeout warning
 RESPONSE_TIMEOUT_MINUTES = 30    # Minutes of silence before "are you ok?" check
 MAX_PACING_L1 = 5                # Max minutes per Level 1 question (from protocol)
 MAX_PACING_L2 = 8                # Max minutes per Level 2 question (from protocol)

@@ -806,3 +806,25 @@ class StateDB:
             b["is_weak"] = b["accuracy"] < 0.65
         return blocks
 
+    async def save_chapter_log(self, chapter: str, subject: str, entry: dict[str, Any], now: str) -> None:
+        """Saves a block's extracted errors and notes under the specific chapter in MongoDB."""
+        db = self._get_db()
+        await db.chapter_logs.update_one(
+            {"chapter": chapter, "subject": subject},
+            {
+                "$push": {"block_entries": entry},
+                "$set": {"chapter": chapter, "subject": subject, "last_updated": now},
+                "$inc": {"block_count": 1},
+            },
+            upsert=True,
+        )
+
+    async def get_chapter_log(self, chapter_query: str, subject: str | None = None) -> dict[str, Any] | None:
+        """Retrieves cumulative logs for a chapter using regex case-insensitive search."""
+        db = self._get_db()
+        query = {"chapter": {"$regex": chapter_query, "$options": "i"}}
+        if subject:
+            query["subject"] = subject
+        return await db.chapter_logs.find_one(query, {"_id": 0})
+
+

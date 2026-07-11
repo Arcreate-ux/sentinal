@@ -153,16 +153,7 @@ class ReflectionEngine:
                 "attempted": result.get("attempted"),
                 "correct": result.get("correct"),
             }
-            db = self.state._get_db()
-            await db.chapter_logs.update_one(
-                {"chapter": chapter, "subject": subject},
-                {
-                    "$push": {"block_entries": entry},
-                    "$set": {"chapter": chapter, "subject": subject, "last_updated": now},
-                    "$inc": {"block_count": 1},
-                },
-                upsert=True,
-            )
+            await self.state.save_chapter_log(chapter, subject, entry, now)
         except Exception as e:
             logger.warning("Failed to save chapter data: %s", e)
 
@@ -177,14 +168,10 @@ class ReflectionEngine:
         from sentinel.brain.prompts import CHAPTER_SUMMARY_PROMPT
 
         try:
-            db = self.state._get_db()
-            query = {"chapter": {"$regex": chapter, "$options": "i"}}
-            if subject:
-                query["subject"] = subject
-
-            doc = await db.chapter_logs.find_one(query, {"_id": 0})
+            doc = await self.state.get_chapter_log(chapter, subject)
             if not doc:
                 return f"📭 No data logged yet for chapter '{chapter}'. Finish some blocks first."
+
 
             entries = doc.get("block_entries", [])
             if not entries:

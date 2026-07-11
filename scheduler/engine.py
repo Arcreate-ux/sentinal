@@ -301,28 +301,13 @@ class SentinelScheduler:
         target_time = block.target_time or 60
         overdue_minutes = elapsed_minutes - target_time
 
-        # Check timeouts
+        # Check timeouts: Only send exactly one warning when overdue by BLOCK_TIMEOUT_MINUTES
         if overdue_minutes >= BLOCK_TIMEOUT_MINUTES:
-            timeout_level_raw = await self.state.get_state("timeout_level_sent") or "0"
-            level = int(timeout_level_raw)
-            
-            # Level 1: Overdue by >= 15 min
-            if level < 1 and overdue_minutes < BLOCK_TIMEOUT_MINUTES + 15:
-                logger.warning("Block %s timeout Level 1 (overdue by %.1f min)", block_label, overdue_minutes)
+            timeout_level_sent = await self.state.get_state("timeout_level_sent") or "0"
+            if timeout_level_sent == "0":
+                logger.warning("Block %s timeout: overdue by %.1f min. Sending single warning.", block_label, overdue_minutes)
                 await self.state.set_state("timeout_level_sent", "1")
                 await self.bot.send_timeout_ping(block, level=1)
-                
-            # Level 2: Overdue by >= 30 min
-            elif level < 2 and BLOCK_TIMEOUT_MINUTES + 15 <= overdue_minutes < BLOCK_TIMEOUT_MINUTES + 30:
-                logger.warning("Block %s timeout Level 2 (overdue by %.1f min)", block_label, overdue_minutes)
-                await self.state.set_state("timeout_level_sent", "2")
-                await self.bot.send_timeout_ping(block, level=2)
-                
-            # Level 3: Overdue by >= 45 min
-            elif level < 3 and overdue_minutes >= BLOCK_TIMEOUT_MINUTES + 30:
-                logger.warning("Block %s timeout Level 3 (overdue by %.1f min)", block_label, overdue_minutes)
-                await self.state.set_state("timeout_level_sent", "3")
-                await self.bot.send_timeout_ping(block, level=3)
 
     async def cancel_block_jobs(self) -> None:
         """Clear active block state to allow immediate transition or halt.
