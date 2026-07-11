@@ -1,8 +1,11 @@
 """
 SENTINEL — Slim Orchestrator (brain/orchestrator.py)
 
-Dispatcher pattern: classify intent via keywords, route to handlers.
-AI reasoning happens in handlers, not in routing.
+Dispatcher pattern:
+  1. State machine handles in-progress conversations (awaiting_*)
+  2. AI classifies intent for free-text messages
+  3. Known system flows get dedicated handlers
+  4. Everything else goes to the dynamic agent with full context
 """
 
 import json
@@ -10,6 +13,8 @@ import logging
 from typing import Callable, Awaitable
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+
+from pydantic import BaseModel, Field
 
 _IST = ZoneInfo("Asia/Kolkata")
 
@@ -22,20 +27,29 @@ def _state_supports(state, method_name: str) -> bool:
     return callable(getattr(type(state), method_name, None))
 
 
-def _classify_intent(text: str) -> str:
-    """Keyword-based intent classifier. No AI, pure Python."""
-    lower = text.lower().strip()
-    if any(w in lower for w in ["done", "finished", "completed"]):
-        return "block_done"
-    if any(w in lower for w in ["weak", "bad at", "struggle", "improve"]):
-        return "analyze_weakness"
-    if any(w in lower for w in ["performance", "stats", "progress"]):
-        return "show_stats"
-    if "chapter" in lower:
-        return "chapter_summary"
-    if "?" in text or any(w in lower for w in ["doubt", "why", "how to", "explain"]):
-        return "doubt"
-    return "general"
+# ── AI Intent Classification ───────────────────────────────────────────────
+
+class IntentClassification(BaseModel):
+    model_config = {"extra": "forbid"}
+    intent: str = Field(description="block_done, analyze_weakness, chapter_summary, or dynamic for anything else")
+    confidence: float = Field(default=0.0)
+    extracted_entities: dict = Field(default_factory=dict, description="Useful entities: chapter names, times, dates")
+
+
+async def _classify_intent_ai(text: str, ai_engine) -> IntentClassification:
+    """Classify message intent using AI. Falls back to 'dynamic' on any error."""
+    prompt = (
+        f"Analyze this student's message. Is it a core system flow (block_done, analyze_weakness, chapter_summary) "
+        f"or something else entirely? Message: '{text}'\n"
+        f"Output strictly valid JSON matching this schema: {IntentClassification.model_json_schema()}"
+    )
+    try:
+        raw = await ai_engine.call("fast", prompt)
+        if "```json" in raw:
+            raw = raw.split("```json")[1].split("```")[0].strip()
+        return IntentClassification.model_validate_json(raw)
+    except Exception:
+        return IntentClassification(intent="dynamic", confidence=0.0)
 
 
 class Orchestrator:
@@ -56,7 +70,7 @@ class Orchestrator:
         self.ai = ai_engine
 
     async def handle(self, message: str, reply_callback: Callable[[str], Awaitable[None]], context_obj=None) -> None:
-        """Main entry point. Routes messages via state machine → keyword intent."""
+        """Main entry point. State machine → AI intent → handler dispatch."""
         text = message.strip()
         if not text:
             return
@@ -70,9 +84,13 @@ class Orchestrator:
             if state_key and state_key.startswith("awaiting_"):
                 return await self._handle_state(state_key, text, reply_callback, context_obj)
 
-            # ── Free-text intent ───────────────────────────────────────────
-            intent = _classify_intent(text)
-            handler = getattr(self, f"_handle_{intent}", self._handle_general)
+            # ── AI intent classification ───────────────────────────────────
+            classification = await _classify_intent_ai(text, self.ai)
+            intent = classification.intent
+            logger.debug("Intent: %s (conf=%.2f) for: %s", intent, classification.confidence, text[:50])
+
+            # ── Dispatch to handler ────────────────────────────────────────
+            handler = getattr(self, f"_handle_{intent}", self._handle_dynamic)
             await handler(text, reply_callback, context_obj)
 
         except Exception as e:
@@ -88,7 +106,6 @@ class Orchestrator:
         await reply(response)
 
     async def _handle_state(self, state_key, text, reply, context_obj):
-        """Dispatch state-machine handlers."""
         handlers = {
             "awaiting_block_report": lambda: self._handle_block_report(text, reply, context_obj),
             "awaiting_done_block_selection": lambda: self._handle_done_block_selection(text, reply),
@@ -100,22 +117,21 @@ class Orchestrator:
         if handler:
             await handler()
 
-    # ── Intent handlers (≤30 lines each) ───────────────────────────────────
+    # ── Known system flow handlers (≤30 lines each) ────────────────────────
 
     async def _handle_block_done(self, text, reply, context_obj):
-        """Route /done-style free-text reports to the reflection pipeline."""
+        """Parse block completion report → confirm flow."""
         result = await self.parser.parse_performance_report(text)
         if result and result.attempted and result.time_taken:
             await self.state.set_state("conversation_state", "confirming_report")
             await self.state.set_state("pending_report", result.model_dump_json())
-            subj = result.subject or "❓"
-            ex = result.exercise_type or "❓"
-            await reply(f"📋 Confirm: {subj} {ex} — {result.attempted}A/{result.correct}C/{result.time_taken}m?\nReply 'yes' to confirm.")
+            await reply(f"📋 Confirm: {result.subject or '?'} {result.exercise_type or '?'} — "
+                        f"{result.attempted}A/{result.correct}C/{result.time_taken}m?\nReply 'yes'.")
         else:
-            await reply("🤔 Couldn't parse that. Try:\n• done EB-1 18/20 45 min\n• A=15 C=12 T=50")
+            await reply("🤔 Couldn't parse. Try:\n• done EB-1 18/20 45 min\n• A=15 C=12 T=50")
 
     async def _handle_analyze_weakness(self, text, reply, context_obj):
-        """Pull deep data and let AI explain weakness."""
+        """Pull 6-month deep data, AI gives brutal diagnosis."""
         await reply("📊 Pulling your full history...")
         try:
             data = await self.analyzer.get_weak_points_deep(months=6)
@@ -129,25 +145,15 @@ class Orchestrator:
                 f"Recurring unresolved: {json.dumps(data['recurring_unresolved_concepts'])}\n"
                 f"Give brutal, specific diagnosis with 3 concrete actions for next 7 days."
             )
-            res = await self.analyzer.ai.call("general_chat", prompt, system_prompt=SYSTEM_PROMPT_COMPETITIVE_RIVAL, max_tokens=600)
+            res = await self.analyzer.ai.call("general_chat", prompt,
+                                              system_prompt=SYSTEM_PROMPT_COMPETITIVE_RIVAL, max_tokens=600)
             await reply(res)
         except Exception as e:
             logger.error("Weak points analysis failed: %s", e)
             await reply("⚠️ Failed to run deep analysis.")
 
-    async def _handle_show_stats(self, text, reply, context_obj):
-        """7-day trend analysis."""
-        trends = await self.analyzer.detect_trends(days=7)
-        from sentinel.brain.prompts import ANALYZE_HISTORY_PROMPT
-        prompt = ANALYZE_HISTORY_PROMPT.format(text=text, trends=json.dumps(trends, indent=2))
-        try:
-            res = await self.analyzer.ai.call("general_chat", prompt, max_tokens=400)
-            await reply(res)
-        except Exception:
-            await reply("⚠️ Failed to analyze history.")
-
     async def _handle_chapter_summary(self, text, reply, context_obj):
-        """Route chapter summary requests."""
+        """Aggregate chapter data → AI summary."""
         chapter_name = text.lower().replace("chapter", "").strip()
         if not chapter_name:
             await reply("Usage: chapter <chapter_name>")
@@ -158,18 +164,108 @@ class Orchestrator:
         else:
             await reply("⚠️ Reflection engine not available.")
 
-    async def _handle_doubt(self, text, reply, context_obj):
-        """Detect and log faculty doubts (don't solve them)."""
-        await self._detect_and_log_doubt(text, reply)
+    # ── Dynamic agent (catch-all for everything else) ───────────────────────
 
-    async def _handle_general(self, text, reply, context_obj):
-        """Fallback: call AI with full student context. Skip for short/simple messages."""
+    async def _handle_dynamic(self, text, reply, context_obj):
+        """Full-context AI agent for rescheduling, queries, chat, and anything unknown."""
+        # Short/simple messages get a fast reply, no AI
         if len(text) < 20 and "?" not in text:
-            common = {"hi", "hello", "hey", "ok", "thanks", "yes", "no", "sure", "yep", "nope"}
-            if text.lower().strip() in common:
+            quick = {"hi", "hello", "hey", "ok", "thanks", "yes", "no", "sure", "yep", "nope"}
+            if text.lower().strip() in quick:
                 await reply("⚡ Back to work.")
                 return
-        await self._call_ai_with_context(text, reply)
+
+        # Doubt detection gate — refuse to solve faculty material
+        if self.ai and await self._is_faculty_doubt(text):
+            return await self._log_doubt_and_refuse(text, reply)
+
+        # Full context AI call
+        await self._call_dynamic_agent(text, reply)
+
+    async def _is_faculty_doubt(self, text) -> bool:
+        """Quick AI check: is this a physics/chem/math doubt?"""
+        if not self.ai:
+            return False
+        try:
+            from sentinel.brain.prompts import DOUBT_DETECTION_PROMPT
+            res = await self.ai.call("fast", DOUBT_DETECTION_PROMPT.format(text=text),
+                                     max_tokens=5, temperature=0.0)
+            return res.strip().upper().startswith("YES")
+        except Exception:
+            return False
+
+    async def _log_doubt_and_refuse(self, text, reply):
+        """Log doubt to faculty list and refuse to solve."""
+        try:
+            await self.state.upsert_concept_asset({
+                "concept_name": text[:120], "subject": "Unknown", "chapter": "Unknown",
+                "resolved": False, "failure_type": "faculty_doubt",
+                "revisions": [], "current_understanding": "Needs faculty clarification",
+                "linked_questions": [],
+            })
+        except Exception:
+            pass
+        await reply("❌ Not my job. Your faculty solves doubts.\n📋 Logged to /faculty list.\nGo back to work.")
+
+    async def _call_dynamic_agent(self, text, reply):
+        """Call AI with full student context for dynamic requests."""
+        if not self.ai:
+            await reply("⚠️ AI not available.")
+            return
+        try:
+            ctx = await self._build_student_context()
+            from sentinel.brain.prompts import SYSTEM_PROMPT_COMPETITIVE_RIVAL
+            prompt = f"CONTEXT:\n{ctx}\n\nSTUDENT MESSAGE: {text}"
+            response = await self.ai.call("general_chat", prompt,
+                                          system_prompt=SYSTEM_PROMPT_COMPETITIVE_RIVAL,
+                                          max_tokens=400, temperature=0.5)
+            await reply(response.strip())
+        except Exception as e:
+            logger.error("Dynamic agent failed: %s", e)
+            await reply("⚠️ Couldn't process that right now.")
+
+    async def _build_student_context(self) -> str:
+        """Assemble full student context for the dynamic agent."""
+        parts = []
+        now_str = datetime.now(_IST).strftime("%Y-%m-%d %H:%M %Z")
+        parts.append(f"DATE/TIME: {now_str}")
+
+        if self.personal_memory:
+            try:
+                mem = await self.personal_memory.get_context_for_ai("")
+                profile = mem.get("student_profile", {})
+                if profile:
+                    parts.append(f"Student: {profile.get('name', '?')}")
+                    parts.append(f"Faculty: {json.dumps(profile.get('faculty', {}))}")
+            except Exception:
+                pass
+
+        yesterday = (datetime.now(_IST) - timedelta(days=1)).strftime("%Y-%m-%d")
+        try:
+            ys = await self.state.get_daily_summary(yesterday)
+            if ys:
+                parts.append(f"Yesterday CY: {ys.get('total_cy', 'N/A')}")
+        except Exception:
+            pass
+
+        try:
+            raw_plan = await self.state.get_state("current_plan")
+            if raw_plan:
+                from sentinel.brain.contracts import PlanningResult
+                r = PlanningResult.model_validate_json(raw_plan)
+                blocks_str = ", ".join(f"{b.block_label}({b.subject})" for b in r.plan.blocks)
+                parts.append(f"Today plan: {blocks_str}")
+        except Exception:
+            pass
+
+        try:
+            unresolved = await self.state.get_unresolved_concepts()
+            if unresolved:
+                parts.append(f"Open doubts: {len(unresolved)}")
+        except Exception:
+            pass
+
+        return "\n".join(parts) if parts else "No context available."
 
     # ── State machine handlers ─────────────────────────────────────────────
 
@@ -178,15 +274,15 @@ class Orchestrator:
             raw = await self.state.get_state("pending_report")
             if raw:
                 from sentinel.bot.schemas import PerformanceReport
-                report = PerformanceReport.model_validate_json(raw)
-                return await self._log_block_result(report, reply, context_obj)
+                return await self._log_block_result(PerformanceReport.model_validate_json(raw), reply, context_obj)
         result = await self.parser.parse_performance_report(text)
         if not result:
             await reply("🤔 Couldn't parse. Try: A=15 C=12 T=50")
             return
         await self.state.set_state("pending_report", result.model_dump_json())
         await self.state.set_state("conversation_state", "confirming_report")
-        await reply(f"📋 Confirm: {result.subject or '?'} {result.exercise_type or '?'} — {result.attempted}A/{result.correct}C/{result.time_taken}m?\nReply 'yes'.")
+        await reply(f"📋 Confirm: {result.subject or '?'} {result.exercise_type or '?'} — "
+                    f"{result.attempted}A/{result.correct}C/{result.time_taken}m?\nReply 'yes'.")
 
     async def _handle_homework_input(self, text, reply):
         parsed = await self.parser.parse_homework(text)
@@ -198,8 +294,8 @@ class Orchestrator:
         existing.extend(hw.model_dump() if hasattr(hw, "model_dump") else dict(hw) for hw in parsed)
         await self.state.set_state("homework_pending", json.dumps(existing))
         await self.state.set_state("conversation_state", "default")
-        summary = ["✅ Homework added:"] + [f"  • {hw.subject}: {hw.exercise_type} ({hw.questions}Q)" for hw in parsed]
-        await reply("\n".join(summary))
+        lines = ["✅ Homework added:"] + [f"  • {hw.subject}: {hw.exercise_type} ({hw.questions}Q)" for hw in parsed]
+        await reply("\n".join(lines))
 
     async def _handle_done_block_selection(self, text, reply):
         today = datetime.now(_IST).strftime("%Y-%m-%d")
@@ -238,7 +334,8 @@ class Orchestrator:
             await self.state.set_state("pending_done_insight", parsed.get("historical_insight", ""))
             await reply(f"🤔 {parsed['followup_question']}")
             return
-        await self._finalize_done_data(block_data, parsed.get("parsed_data", {}), parsed.get("historical_insight", ""), reply)
+        await self._finalize_done_data(block_data, parsed.get("parsed_data", {}),
+                                       parsed.get("historical_insight", ""), reply)
 
     async def _handle_done_followup(self, text, reply, context_obj):
         raw_data = await self.state.get_state("pending_done_data")
@@ -277,12 +374,13 @@ class Orchestrator:
         try:
             from sentinel.brain.contracts import PlanningResult
             result = PlanningResult.model_validate_json(raw)
-            return [StudyBlockEngine.normalize_block(b, today, i + 1).model_dump() for i, b in enumerate(result.plan.blocks)]
+            return [StudyBlockEngine.normalize_block(b, today, i + 1).model_dump()
+                    for i, b in enumerate(result.plan.blocks)]
         except Exception:
             return []
 
     async def _finalize_done_data(self, block_data, parsed_data, insight, reply):
-        """Save completed block: compute CY → save DB → revision tracking → Notion → advance index."""
+        """Compute CY → save DB → revision tracking → Notion → advance index."""
         from sentinel.notion_client.formulas import cognitive_yield
 
         today = datetime.now(_IST).strftime("%Y-%m-%d")
@@ -292,7 +390,6 @@ class Orchestrator:
         cy = cognitive_yield(T=T, A=A, C=C,
                              exercise_type=block_data.get("exercise_type", "Ex 1A"),
                              subject=block_data.get("subject", "Physics"))
-
         block_data.update({"status": "COMPLETED", "attempted": A, "correct": C,
                            "T": T, "A": A, "C": C, "actual_cy": cy})
 
@@ -309,7 +406,6 @@ class Orchestrator:
         await self._advance_block_index(reply, block_data, cy, A, C, insight)
 
     async def _update_revision_tracking(self, block_data, parsed_data):
-        """Increment revision counts and store circled questions."""
         try:
             for concept in parsed_data.get("recurring_mistakes", []):
                 if hasattr(self.state, "increment_revision_count"):
@@ -319,13 +415,13 @@ class Orchestrator:
                 raw = await self.state.get_state("circled_questions")
                 circled = json.loads(raw) if raw else []
                 for err in errors[:3]:
-                    circled.append({"subject": block_data.get("subject", ""), "chapter": block_data.get("chapter", "?"), "error": err})
+                    circled.append({"subject": block_data.get("subject", ""),
+                                    "chapter": block_data.get("chapter", "?"), "error": err})
                 await self.state.set_state("circled_questions", json.dumps(circled[-20:]))
         except Exception:
             logger.debug("Revision tracking failed (non-fatal)", exc_info=True)
 
     async def _sync_to_notion(self, block_data, parsed_data, cy, today):
-        """Write completed block to Notion DB1/DB2/DB3."""
         if not self.notion:
             return
         try:
@@ -348,91 +444,24 @@ class Orchestrator:
             logger.warning("Notion sync failed", exc_info=True)
 
     async def _advance_block_index(self, reply, block_data, cy, A, C, insight):
-        """Move to next block, format completion reply."""
         idx_raw = await self.state.get_state("current_block_index")
         idx = int(idx_raw) if idx_raw else 0
         await self.state.set_state("current_block_index", str(idx + 1))
         await self.state.set_state("pending_done_block", "")
         await self.state.set_state("conversation_state", "default")
         insight_msg = f"\n💡 {insight}\n" if insight else ""
-        await reply(
-            f"✅ Block Complete: {block_data.get('block_label', '?')}\n"
-            f"Stats: {C}/{A} correct. CY: {cy}{insight_msg}"
-        )
-
-    async def _detect_and_log_doubt(self, text, reply):
-        """Check if message is a faculty doubt, log it, and refuse to solve."""
-        if not self.ai:
-            await reply("⚠️ AI not available.")
-            return
-        try:
-            from sentinel.brain.prompts import DOUBT_DETECTION_PROMPT
-            res = await self.ai.call("parser", DOUBT_DETECTION_PROMPT.format(text=text),
-                                     system_reply="Reply YES or NO", max_tokens=5, temperature=0.0)
-            if res.strip().upper().startswith("YES"):
-                try:
-                    await self.state.upsert_concept_asset({
-                        "concept_name": text[:120], "subject": "Unknown", "chapter": "Unknown",
-                        "resolved": False, "failure_type": "faculty_doubt",
-                        "revisions": [], "current_understanding": "Needs faculty clarification",
-                        "linked_questions": [],
-                    })
-                except Exception:
-                    pass
-                await reply("❌ Not my job. Your faculty solves doubts.\n📋 Logged to /faculty list.\nGo back to work.")
-                return
-        except Exception:
-            pass
-        await self._call_ai_with_context(text, reply)
-
-    async def _call_ai_with_context(self, text, reply):
-        """Call AI with full student context for general chat."""
-        if not self.ai:
-            await reply("⚠️ AI not available.")
-            return
-        try:
-            context_parts = []
-            if self.personal_memory:
-                mem_ctx = await self.personal_memory.get_context_for_ai(text)
-                profile = mem_ctx.get("student_profile", {})
-                if profile:
-                    context_parts.append(f"Student: {profile.get('name', '?')}")
-                    context_parts.append(f"Faculty: {json.dumps(profile.get('faculty', {}))}")
-            yesterday = (datetime.now(_IST) - timedelta(days=1)).strftime("%Y-%m-%d")
-            ys = await self.state.get_daily_summary(yesterday)
-            if ys:
-                context_parts.append(f"Yesterday CY: {ys.get('total_cy', 'N/A')}")
-            raw_plan = await self.state.get_state("current_plan")
-            if raw_plan:
-                try:
-                    from sentinel.brain.contracts import PlanningResult
-                    r = PlanningResult.model_validate_json(raw_plan)
-                    context_parts.append(f"Today blocks: {len(r.plan.blocks)}")
-                except Exception:
-                    pass
-            ctx = "\n".join(context_parts) if context_parts else "No context."
-            from sentinel.brain.prompts import SYSTEM_PROMPT_COMPETITIVE_RIVAL
-            prompt = f"CONTEXT:\n{ctx}\n\nSTUDENT MESSAGE: {text}"
-            response = await self.ai.call("general_chat", prompt,
-                                          system_prompt=SYSTEM_PROMPT_COMPETITIVE_RIVAL,
-                                          max_tokens=400, temperature=0.5)
-            await reply(response.strip())
-        except Exception as e:
-            logger.error("AI call failed: %s", e)
-            await reply("⚠️ Couldn't process that right now.")
+        await reply(f"✅ Block Complete: {block_data.get('block_label', '?')}\n"
+                    f"Stats: {C}/{A} correct. CY: {cy}{insight_msg}")
 
     async def _log_block_result(self, report, reply, context_obj):
-        """Legacy block result logger (confirm flow)."""
         from sentinel.notion_client.formulas import cognitive_yield
         A, C, T = report.attempted, report.correct, report.time_taken
         subject = report.subject or "Physics"
         ex_type = report.exercise_type or "Ex 1A"
         today = datetime.now(_IST).strftime("%Y-%m-%d")
-
         idx_raw = await self.state.get_state("current_block_index")
         idx = int(idx_raw) if idx_raw else 0
         cy = cognitive_yield(T, A, C, ex_type, subject)
-
         block_entry = {"status": "COMPLETED", "actual_cy": cy, "T": T, "A": A, "C": C,
                        "subject": subject, "exercise_type": ex_type, "block_label": f"Block-{idx+1}"}
         await self.state.save_completed_block(today, block_entry)
