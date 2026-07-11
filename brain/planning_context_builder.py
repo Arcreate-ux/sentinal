@@ -4,6 +4,7 @@ Fetches raw data from storage engines (Mongo/Notion) to build the typed Planning
 """
 
 from datetime import datetime, timedelta
+import json
 import logging
 
 from sentinel.brain.contracts import PlanningContext, YesterdaySummary, StreakInfo, RevisionItem, HomeworkItem
@@ -19,6 +20,7 @@ class PlanningContextBuilder:
         """
         Gathers raw data for the planner and returns a strongly-typed PlanningContext.
         """
+        today = datetime.now().strftime("%Y-%m-%d")
         yesterday_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         
         # 1. Gather yesterday's summary
@@ -79,10 +81,118 @@ class PlanningContextBuilder:
             except Exception as e:
                 logger.warning(f"Failed to fetch learning confidence level: {e}")
 
+        # 5. Date context
+        day_type_raw = None
+        if hasattr(self.state, "get_state"):
+            try:
+                day_type_raw = await self.state.get_state("day_type")
+            except Exception:
+                pass
+        day_type = day_type_raw if day_type_raw else "self_study"
+
+        # 6. JEE countdown
+        days_to_jee = 0
+        if hasattr(self.state, "get_state"):
+            try:
+                jee_raw = await self.state.get_state("days_to_jee")
+                if jee_raw:
+                    days_to_jee = int(jee_raw)
+            except (ValueError, TypeError, Exception):
+                pass
+
+        # 7. Coaching exam countdown
+        days_to_coaching_exam = 0
+        if hasattr(self.state, "get_state"):
+            try:
+                coaching_days_raw = await self.state.get_state("days_to_coaching_exam")
+                if coaching_days_raw:
+                    days_to_coaching_exam = int(coaching_days_raw)
+            except (ValueError, TypeError, Exception):
+                pass
+
+        coaching_exam_syllabus = ""
+        if hasattr(self.state, "get_state"):
+            try:
+                coaching_exam_syllabus = await self.state.get_state("coaching_exam_syllabus") or ""
+            except Exception:
+                pass
+
+        # 8. Circled questions (stored as JSON list in state)
+        circled_questions = []
+        if hasattr(self.state, "get_state"):
+            try:
+                circled_raw = await self.state.get_state("circled_questions")
+                if circled_raw:
+                    circled_questions = json.loads(circled_raw)
+            except (json.JSONDecodeError, TypeError, Exception):
+                pass
+
+        # 9. Questions needing repetition (revision_count >= 3, < 5)
+        questions_needing_repetition = []
+        if hasattr(self.state, "get_questions_needing_repetition"):
+            try:
+                questions_needing_repetition = await self.state.get_questions_needing_repetition(threshold=3)
+            except Exception as e:
+                logger.warning(f"Failed to fetch questions needing repetition: {e}")
+
+        # 10. Weak subjects (average accuracy < 50% this week)
+        weak_subjects = []
+        if hasattr(self.state, "get_blocks_range"):
+            try:
+                blocks_raw = await self.state.get_blocks_range(
+                    (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+                    today
+                )
+                if blocks_raw:
+                    subject_stats = {}
+                    for b in blocks_raw:
+                        subj = b.get("subject", "")
+                        a = b.get("attempted") or 0
+                        c = b.get("correct") or 0
+                        if a > 0:
+                            subject_stats.setdefault(subj, []).append(c / a)
+                    for subj, accs in subject_stats.items():
+                        avg = sum(accs) / len(accs) if accs else 0
+                        if avg < 0.5:
+                            weak_subjects.append(subj)
+            except Exception as e:
+                logger.warning(f"Failed to compute weak subjects: {e}")
+
+        # 11. Yesterday completion percentage
+        yesterday_completion_pct = 0.0
+        if ys.blocks_completed > 0 or ys.blocks_skipped > 0:
+            total = ys.blocks_completed + ys.blocks_skipped
+            yesterday_completion_pct = round(ys.blocks_completed / total, 2) if total > 0 else 0.0
+
+        # 12. 7-day rolling average CY
+        average_cy = 0.0
+        try:
+            week_summaries = []
+            for i in range(7):
+                d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+                s = await self.state.get_daily_summary(d)
+                if s:
+                    week_summaries.append(s.get("total_cy", 0))
+            if week_summaries:
+                average_cy = round(sum(week_summaries) / len(week_summaries), 1)
+        except Exception as e:
+            logger.warning(f"Failed to compute average CY: {e}")
+
         return PlanningContext(
             yesterday_summary=ys,
             streak=streak,
             revision_backlog=revision_items,
             homework=hw_items,
             learning_confidence_level=learning_level,
+            date=today,
+            day_type=day_type,
+            days_to_jee=days_to_jee,
+            days_to_coaching_exam=days_to_coaching_exam,
+            coaching_exam_syllabus=coaching_exam_syllabus,
+            circled_questions=circled_questions,
+            questions_needing_repetition=questions_needing_repetition,
+            weak_subjects=weak_subjects,
+            yesterday_completion_pct=yesterday_completion_pct,
+            average_cy=average_cy,
+            pending_homework=len(hw_items),
         )

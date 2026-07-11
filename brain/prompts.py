@@ -76,16 +76,52 @@ Generate today's battle plan.
 - CY achieved: {yesterday_cy}/{daily_cy_target}
 - Time invested: {yesterday_ty} min
 - Streak: {streak_status}
+- Completion rate: {yesterday_completion_pct}%
 
-📋 TODAY'S CONTEXT:
+📅 TODAY'S CONTEXT:
 - Date: {today_date}
 - Day type: {day_type}
 - Coaching: {coaching_schedule}
 - Coaching homework: {coaching_homework}
 - Learning confidence level: L{learning_confidence_level}
+- JEE Main: {days_to_jee} days remaining
+- Coaching exam: {days_to_coaching_exam} days remaining
+- Coaching exam syllabus: {coaching_exam_syllabus}
+- 7-day average CY: {average_cy}
+- Pending homework items: {pending_homework}
 
 📚 REVISION BACKLOG:
 {revision_backlog}
+
+🔄 CIRCLED QUESTIONS (NEED REPETITION):
+{circled_questions}
+
+⚠️ WEAK SUBJECTS (< 50% accuracy this week):
+{weak_subjects}
+
+REASONING RULES:
+1. HARD CONSTRAINTS — Never violate:
+   - Total planned time must fit within wake-to-{hard_stop_hour}:00.
+   - Each block must be >= 15 minutes and <= 90 minutes.
+   - No more than 3 consecutive blocks of the same subject.
+   - Coaching blocks cannot exceed 2 in a day.
+2. PYQ INTEGRATION — If a question has been circled >= 2 times:
+   - It MUST appear in a revision block today (unless it's already mastered at 5+ revisions).
+   - Prioritize circled questions from the same subject as today's weak subject.
+3. COACHING EXAM ADAPTATION:
+   - If {days_to_coaching_exam} <= 7: Shift 60% of study time to coaching syllabus revision.
+   - If {days_to_coaching_exam} <= 3: Shift 80% to coaching syllabus, add mock tests.
+   - Always include the coaching exam syllabus in at least one revision block.
+4. WEAK SUBJECT PRIORITY:
+   - Allocate >= 40% of study time to the weakest subject(s).
+   - Use revision blocks for weak chapters; use theory blocks only for conceptual gaps.
+5. REVISION CADENCE:
+   - Every circled question must be revised at least once every 3 days.
+   - Questions at revision count 3-4: schedule in the FIRST revision block (highest priority).
+   - Questions at revision count 5+: do NOT include (mastered).
+6. CY BALANCING:
+   - If yesterday_completion_pct < 70%, reduce total CY target by 20% and add recovery blocks.
+   - If average_cy > {daily_cy_target} * 1.2, increase target by 10%.
 
 YOUR JOB:
 1. Build today's block schedule (EB-1, EB-2, EB-3, RB, etc.) with specific subjects, exercise types, and question counts.
@@ -116,7 +152,7 @@ Required schema:
       "expected_questions": <int>,
       "estimated_minutes": <minutes>,
       "questions": "<range or count>",
-      "block_type": "homework|revision|theory|test|faculty_session",
+      "block_type": "homework|revision|theory|test|faculty_session|pyq|short_notes",
       "difficulty": "Easy|Medium|Hard"
     }}}}
   ]
@@ -128,11 +164,13 @@ Be specific. No vague "study hard" advice. Block names, subjects, question count
     "target_iit": TARGET_IIT,
     "target_branch": TARGET_BRANCH,
     **{k: "{" + k + "}" for k in [
-        "yesterday_cy", "yesterday_ty", "streak_status",
+        "yesterday_cy", "yesterday_ty", "streak_status", "yesterday_completion_pct",
         "today_date", "day_type", "coaching_schedule",
         "coaching_homework", "revision_backlog",
         "hard_stop_hour", "subjects", "exercise_types", "block_types", "tq_table", "weekday",
-        "learning_confidence_level"
+        "learning_confidence_level",
+        "days_to_jee", "days_to_coaching_exam", "coaching_exam_syllabus",
+        "circled_questions", "weak_subjects", "average_cy", "pending_homework",
     ]}
 })
 

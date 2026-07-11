@@ -227,6 +227,29 @@ class SentinelBot:
 
         today = datetime.now(_IST).strftime("%Y-%m-%d")
         yesterday = (datetime.now(_IST) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        # ── Coaching Exam Auto-Advance ──────────────────────────────────────
+        # Check if the coaching exam is overdue; if so, calculate next cycle and prompt
+        try:
+            from datetime import date as date_class
+            next_exam_raw = await self.state.get_state("next_coaching_exam_date")
+            cycle_days_raw = await self.state.get_state("coaching_exam_cycle_days")
+            if next_exam_raw and cycle_days_raw:
+                next_exam = date_class.fromisoformat(next_exam_raw)
+                cycle_days = int(cycle_days_raw) if cycle_days_raw else 0
+                today_date = date_class.today()
+                days_left = (next_exam - today_date).days
+                if days_left <= 0 and cycle_days > 0:
+                    # Exam has passed — advance to next cycle
+                    next_date = next_exam + timedelta(days=cycle_days)
+                    await self.state.set_state("next_coaching_exam_date", next_date.isoformat())
+                    await self.state.set_state("coaching_exam_syllabus", "")
+                    await self.state.set_state("days_to_coaching_exam", str(cycle_days))
+                    await self.state.set_state("conversation_state", "awaiting_new_syllabus")
+                    logger.info("Coaching exam auto-advanced to %s", next_date.isoformat())
+        except Exception:
+            pass  # Non-fatal — continue with current data
+
         try:
             plan_date = await self.state.get_state("plan_date")
             raw = await self.state.get_state("current_plan")

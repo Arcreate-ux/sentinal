@@ -41,6 +41,17 @@ class PlanningContext(BaseModel):
     revision_backlog: List[RevisionItem]
     homework: List[HomeworkItem]
     learning_confidence_level: int = Field(default=0, ge=0, le=4)
+    date: str = Field(default="")
+    day_type: str = Field(default="self_study")
+    days_to_jee: int = Field(default=0, description="Days remaining to JEE Main")
+    days_to_coaching_exam: int = Field(default=0, description="Days remaining to coaching exam")
+    coaching_exam_syllabus: str = Field(default="", description="Current coaching exam syllabus")
+    circled_questions: List[Dict[str, str]] = Field(default_factory=list, description="Questions circled for revision: [{subject, chapter, pyq_ref}]")
+    questions_needing_repetition: List[Dict[str, Any]] = Field(default_factory=list, description="Questions hitting revision threshold")
+    weak_subjects: List[str] = Field(default_factory=list, description="Subjects with < 50% average accuracy this week")
+    yesterday_completion_pct: float = Field(default=0.0, description="Yesterday's completion percentage (completed/planned blocks)")
+    average_cy: float = Field(default=0.0, description="7-day rolling average CY")
+    pending_homework: int = Field(default=0, description="Number of pending homework items")
 
 class PlanningPrediction(BaseModel):
     model_config = {"extra": "forbid"}

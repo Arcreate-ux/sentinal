@@ -137,6 +137,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Commands: /help\n"
         f"Let's get to work. 🔥"
     ))
+# ── /reset ──────────────────────────────────────────────────────────────────
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Re-run onboarding from the start (for when coaching exam dates change, etc.)."""
+    state = _state(context)
+    from sentinel.brain.onboarding import OnboardingEngine
+    onboarding = OnboardingEngine(state)
+    first_question = await onboarding.get_first_question()
+    await _reply(update, f"🔄 Onboarding reset. Let's start over.\n\n{first_question}")
+
 # ── /plan ───────────────────────────────────────────────────────────────────
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show the current day plan, or generate a new one."""
@@ -839,6 +848,84 @@ async def cmd_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     })
     await _reply(update, "📝 Feedback saved. This helps me improve. Thanks.")
 
+# ── /ai ─────────────────────────────────────────────────────────────────────
+async def cmd_ai(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Direct AI pipe — ask anything with student context."""
+    args = update.message.text.split(None, 1)
+    if len(args) < 2 or not args[1].strip():
+        await _reply(update, "Usage: /ai <your question>\nExample: /ai Why is torque a cross product?")
+        return
+
+    question = args[1].strip()
+    state = _state(context)
+    ai_engine = context.bot_data.get("ai_engine")
+    if not ai_engine:
+        await _reply(update, "⚠️ AI engine not available.")
+        return
+
+    # Build student context for the AI
+    profile = await state.get_student_profile()
+    context_parts = []
+
+    if profile:
+        name = profile.get("name", "")
+        if name:
+            context_parts.append(f"Student: {name}")
+
+    # Current weak areas
+    if hasattr(state, "get_questions_needing_repetition"):
+        try:
+            weak_qs = await state.get_questions_needing_repetition(threshold=3)
+            if weak_qs:
+                weak_str = "; ".join(f"{q.get('subject','?')} {q.get('chapter','?')}" for q in weak_qs[:5])
+                context_parts.append(f"Weak areas: {weak_str}")
+        except Exception:
+            pass
+
+    # Unresolved doubts
+    try:
+        unresolved = await state.get_unresolved_concepts()
+        if unresolved:
+            doubt_str = "; ".join(c.get("concept_name", "?") for c in unresolved[:3])
+            context_parts.append(f"Open doubts: {doubt_str}")
+    except Exception:
+        pass
+
+    # Today's CY status
+    today = datetime.now(_IST).strftime("%Y-%m-%d")
+    try:
+        completed = await state.get_today_blocks(today)
+        cy_today = sum(b.get("actual_cy", 0) for b in completed) if completed else 0
+        context_parts.append(f"CY today: {cy_today}/{DAILY_CY_TARGET}")
+    except Exception:
+        pass
+
+    context_block = "\n".join(context_parts) if context_parts else "No student context available."
+
+    system_prompt = (
+        "You are SENTINEL — a data-obsessed competitive rival for a JEE aspirant. "
+        "The student is asking you a direct question. Answer it concisely and accurately. "
+        "You may explain concepts, solve problems, and teach — this is the ONE exception "
+        "to your usual 'no teaching' rule. Keep answers under 200 words. Be sharp and direct."
+    )
+
+    full_prompt = f"STUDENT CONTEXT:\n{context_block}\n\nQUESTION: {question}"
+
+    await _reply(update, "🤖 Thinking...")
+
+    try:
+        response = await ai_engine.call(
+            task_type="general",
+            prompt=full_prompt,
+            system_prompt=system_prompt,
+            temperature=0.7,
+            max_tokens=512,
+        )
+        await _reply(update, f"🤖 {response}")
+    except Exception:
+        logger.exception("AI call failed for /ai command")
+        await _reply(update, "⚠️ AI call failed. Try again later.")
+
 # ── /help ───────────────────────────────────────────────────────────────────
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show all available commands."""
@@ -848,6 +935,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"📋 /plan — Show or generate daily plan\n"
         f"📊 /status — CY progress today\n"
         f"✅ /done <report> — Finish block and reflect\n"
+        f"🤖 /ai <question> — Ask AI anything\n"
         f"🧑‍🏫 /doubts [subject] — Show unresolved concepts\n"
         f"🧑‍🏫 /faculty [name] — Doubt list for coaching\n"
         f"📋 /backlog — All pending work\n"
@@ -857,6 +945,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"⏭️ /skip [reason] — Skip current block\n"
         f"😴 /sick — Activate off-day\n"
         f"🔄 /sync — Force Notion sync\n"
+        f"🔁 /reset — Re-run onboarding\n"
         f"📝 /scores <results> — Log test scores\n"
         f"🔥 /roast — On-demand roast\n"
         f"🧠 /remember <fact> — Save to memory\n"
@@ -876,6 +965,7 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 COMMANDS = [
     cmd_start,
+    cmd_reset,
     cmd_plan,
     cmd_status,
     cmd_homework,
@@ -886,6 +976,7 @@ COMMANDS = [
     cmd_scores,
     cmd_roast,
     cmd_done,
+    cmd_ai,
     cmd_chapter,
     cmd_doubts,
     cmd_jee,

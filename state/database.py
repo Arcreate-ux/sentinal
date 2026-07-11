@@ -72,6 +72,7 @@ class StateDB:
             await db.concept_assets.create_index("concept_name", unique=True)
             await db.skill_assets.create_index([("skill_name", 1), ("subject", 1)], unique=True)
             await db.chapter_logs.create_index([("chapter", 1), ("subject", 1)], unique=True)
+            await db.revision_tracking.create_index([("subject", 1), ("chapter", 1)], unique=True)
             logger.info(f"MongoDB initialized at {self.uri} (DB: {self.db_name})")
         except ConnectionFailure as e:
             logger.error(f"Failed to connect to MongoDB: {e}")
@@ -826,5 +827,39 @@ class StateDB:
         if subject:
             query["subject"] = subject
         return await db.chapter_logs.find_one(query, {"_id": 0})
+
+    # ─────────────────────────────────────────────────────────────────────
+    # REVISION TRACKING
+    # ─────────────────────────────────────────────────────────────────────
+    async def get_revision_count(self, subject: str, chapter: str) -> int:
+        """Returns the number of times a question/topic has been revised."""
+        db = self._get_db()
+        doc = await db.revision_tracking.find_one({"subject": subject, "chapter": chapter})
+        if doc is None:
+            return 0
+        return doc.get("count", 0)
+
+    async def increment_revision_count(self, subject: str, chapter: str) -> int:
+        """Increments revision count and returns the new count."""
+        db = self._get_db()
+        result = await db.revision_tracking.find_one_and_update(
+            {"subject": subject, "chapter": chapter},
+            {
+                "$inc": {"count": 1},
+                "$set": {"last_revised": datetime.now(timezone.utc).isoformat()},
+                "$setOnInsert": {"subject": subject, "chapter": chapter},
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return result.get("count", 1) if result else 1
+
+    async def get_questions_needing_repetition(self, threshold: int = 3) -> list[dict]:
+        """Returns questions where revision_count >= threshold and count < 5 (mastered)."""
+        db = self._get_db()
+        cursor = db.revision_tracking.find({
+            "count": {"$gte": threshold, "$lt": 5}
+        }).sort("count", -1)
+        return await cursor.to_list(length=None)
 
 

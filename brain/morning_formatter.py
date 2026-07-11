@@ -4,12 +4,59 @@ Translates the final ExecutionPlan + context into a rich morning briefing.
 """
 
 import json
-from datetime import date, datetime
+from datetime import date
 
 from sentinel.brain.contracts import ExecutionPlan
 
 
 class MorningFormatter:
+    def _build_morning_header(self, profile: dict | None) -> list[str]:
+        """Build the morning header with date, JEE countdown, and coaching exam countdown."""
+        today = date.today()
+        lines = []
+
+        # Date line
+        date_str = today.strftime("%A, %d %B %Y")
+        lines.append(f"📅 {date_str}")
+
+        # JEE countdown
+        jee_date_str = profile.get("jee_exam_date") if profile else None
+        if not jee_date_str:
+            jee_date_str = profile.get("jee_main_date") if profile else None
+        if jee_date_str:
+            try:
+                jee_days = (date.fromisoformat(jee_date_str) - today).days
+                lines.append(f"⏳ JEE Main: {jee_days} days left")
+            except ValueError:
+                lines.append(f"⏳ JEE Main: ? days left")
+        jee_adv_str = profile.get("jee_advanced_date") if profile else None
+        if jee_adv_str:
+            try:
+                adv_days = (date.fromisoformat(jee_adv_str) - today).days
+                lines.append(f"🚀 JEE Advanced: {adv_days} days left")
+            except ValueError:
+                pass
+
+        # Coaching exam countdown
+        coaching_date_str = profile.get("next_coaching_exam_date") if profile else None
+        if coaching_date_str:
+            try:
+                coaching_days = (date.fromisoformat(coaching_date_str) - today).days
+                if coaching_days >= 0:
+                    lines.append(f"📝 Coaching Exam: {coaching_days} days left")
+                else:
+                    lines.append(f"📝 Coaching Exam: OVERDUE by {-coaching_days} days")
+            except ValueError:
+                lines.append(f"📝 Coaching Exam: ? days left")
+
+        # Coaching exam syllabus
+        syllabus = profile.get("coaching_exam_syllabus", "") if profile else ""
+        if syllabus:
+            syllabus_short = syllabus[:60] + "..." if len(syllabus) > 60 else syllabus
+            lines.append(f"📚 Syllabus: {syllabus_short}")
+
+        return lines
+
     def format_morning_briefing(
         self,
         plan: ExecutionPlan,
@@ -27,6 +74,15 @@ class MorningFormatter:
 
         lines = [f"Good Morning, {name}.", ""]
 
+        # Morning header with countdowns
+        header_lines = self._build_morning_header(profile)
+        if header_lines:
+            lines.append(f"{'━' * 26}")
+            for hl in header_lines:
+                lines.append(hl)
+            lines.append(f"{'━' * 26}")
+            lines.append("")
+
         # Yesterday's performance
         if yesterday_summary:
             ycy = yesterday_summary.get("total_cy", 0)
@@ -43,17 +99,6 @@ class MorningFormatter:
             streak_count = streak.get("current_count", 0)
             best = streak.get("best_count", 0)
             lines.append(f"🔥 Streak: {streak_count} days (best: {best})")
-
-        # JEE countdown
-        if profile:
-            main_date_str = profile.get("jee_main_date", "2028-01-20")
-            adv_date_str = profile.get("jee_advanced_date", "2028-06-01")
-            try:
-                days_main = (date.fromisoformat(main_date_str) - today).days
-                days_adv = (date.fromisoformat(adv_date_str) - today).days
-                lines.append(f"⏰ JEE Main: {days_main}d | Advanced: {days_adv}d")
-            except ValueError:
-                pass
         lines.append("")
 
         # Pending work summary

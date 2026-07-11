@@ -3,6 +3,7 @@ SENTINEL — Planning Prompt Builder (brain/planning_prompt_builder.py)
 Serializes typed models into JSON and assembles the LLM prompt.
 """
 
+import json
 from datetime import datetime
 from sentinel.brain.prompts import DAILY_PLAN_PROMPT_TEMPLATE
 from sentinel.brain.contracts import PlanningContext
@@ -41,13 +42,11 @@ class PlanningPromptBuilder:
 
         # 3. Format Revision Backlog
         if context.revision_backlog:
-            # We only show top 10 items in the prompt to save tokens
             items_dump = [item.model_dump() for item in context.revision_backlog[:10]]
             backlog_payload = {
                 "count": len(context.revision_backlog),
                 "items": items_dump
             }
-            import json
             revision_backlog_str = json.dumps(backlog_payload, indent=2)
         else:
             revision_backlog_str = '{"count": 0, "items": []}'
@@ -58,16 +57,28 @@ class PlanningPromptBuilder:
         else:
             homework_str = '{"count": 0, "items": []}'
 
+        # 5. Format circled questions
+        if context.circled_questions:
+            circled_str = json.dumps(context.circled_questions, indent=2)
+        else:
+            circled_str = "None"
+
+        # 6. Format weak subjects
+        if context.weak_subjects:
+            weak_str = ", ".join(context.weak_subjects)
+        else:
+            weak_str = "None"
+
         # Build prompt using Protocol Snapshot
-        import json
         prompt = DAILY_PLAN_PROMPT_TEMPLATE.format(
             today_date=today,
             weekday=weekday,
-            day_type=day_type,
+            day_type=context.day_type or day_type,
             coaching_schedule=", ".join(coaching_days) if coaching_days else "None set",
             yesterday_summary=yesterday_str,
             yesterday_cy=yesterday_cy,
             yesterday_ty=yesterday_ty,
+            yesterday_completion_pct=context.yesterday_completion_pct,
             streak_status=streak_status,
             revision_backlog=revision_backlog_str,
             coaching_homework=homework_str,
@@ -78,5 +89,12 @@ class PlanningPromptBuilder:
             exercise_types=", ".join(protocol.exercise_types),
             block_types=", ".join(protocol.block_types),
             tq_table=json.dumps(protocol.t_q_table, indent=2),
+            days_to_jee=context.days_to_jee,
+            days_to_coaching_exam=context.days_to_coaching_exam,
+            coaching_exam_syllabus=context.coaching_exam_syllabus or "None",
+            circled_questions=circled_str,
+            weak_subjects=weak_str,
+            average_cy=context.average_cy,
+            pending_homework=context.pending_homework,
         )
         return prompt
